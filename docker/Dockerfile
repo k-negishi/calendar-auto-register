@@ -1,6 +1,6 @@
-FROM python:3.12-slim AS base
+FROM python:3.12-slim
 
-ARG APP_ENV=local
+ARG APP_ENV=prod
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -23,29 +23,3 @@ COPY app ./app
 RUN uv pip install --system .
 
 CMD ["bash"]
-
-FROM base AS local
-
-ARG AWSCLI_VERSION=2.17.66
-ARG TARGETARCH
-
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends unzip groff less git; \
-    rm -rf /var/lib/apt/lists/*
-
-RUN uv pip install --system "calendar-auto-register[dev]"
-
-RUN set -eux; \
-    case "${TARGETARCH}" in \
-        ""|amd64) AWSCLI_ARCH="x86_64" ;; \
-        arm64|aarch64) AWSCLI_ARCH="aarch64" ;; \
-        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
-    esac; \
-    AWSCLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-${AWSCLI_ARCH}-${AWSCLI_VERSION}.zip"; \
-    if ! curl -fsSL "${AWSCLI_URL}" -o awscliv2.zip; then \
-        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWSCLI_ARCH}.zip" -o awscliv2.zip; \
-    fi; \
-    unzip awscliv2.zip; \
-    ./aws/install --update; \
-    rm -rf aws awscliv2.zip

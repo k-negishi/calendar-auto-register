@@ -1,8 +1,7 @@
 x-local-base: &local-base
   build:
     context: .
-    dockerfile: docker/Dockerfile
-    target: local
+    dockerfile: docker/Dockerfile.local
     args:
       APP_ENV: local
   working_dir: /workspace
@@ -31,7 +30,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-      target: base
       args:
         APP_ENV: prod
     working_dir: /workspace
