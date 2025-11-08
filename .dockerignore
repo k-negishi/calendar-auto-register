@@ -1,0 +1,11 @@
+.git
+.gitignore
+.idea
+**/__pycache__
+**/*.pyc
+.env
+.env.*
+.aws
+node_modules
+awscliv2.zip
+.DS_Store
