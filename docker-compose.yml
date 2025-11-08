@@ -1,0 +1,36 @@
+services:
+  local:
+    container_name: calendar-auto-register-local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: local
+      args:
+        APP_ENV: local
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: local
+    stdin_open: true
+    tty: true
+    command: bash
+
+  prod:
+    container_name: calendar-auto-register
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: base
+      args:
+        APP_ENV: prod
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      APP_ENV: prod
+    stdin_open: true
+    tty: true
+    command: bash
