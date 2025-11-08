@@ -26,5 +26,5 @@ def run_local() -> None:
     uvicorn.run("calendar_auto_register.main:app", host=host, port=port, reload=True)
 
 
-if __name__ == "__main__":
+if os.getenv("RUN_LOCAL") == "1":
     run_local()
