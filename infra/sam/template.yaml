@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  calendar-auto-register: Lambda (container) + Private IAM-protected API Gateway.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: calendar-auto-register
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Docker tag used when building the Lambda image.
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 1024
+    Tracing: Active
+
+Resources:
+  CalendarFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}"
+      Description: FastAPI Lambdalith for calendar auto register.
+      PackageType: Image
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          APP_ENV: prod
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        ApiRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CalendarApi
+            Path: /
+            Method: ANY
+        ApiProxy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CalendarApi
+            Path: /{proxy+}
+            Method: ANY
+    Metadata:
+      DockerContext: ../../
+      Dockerfile: docker/Dockerfile
+      DockerTag: !Ref ImageTag
+      DockerBuildArgs:
+        APP_ENV: prod
+
+  CalendarApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${ProjectName}-api"
+      StageName: default
+      Auth:
+        DefaultAuthorizer: NONE
+        InvokeRole: NONE
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: ERROR
+          MetricsEnabled: false
+Outputs:
+  CalendarFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt CalendarFunction.Arn
+  CalendarApiEndpoint:
+    Description: Invoke URL for the API Gateway stage
+    Value: !Sub "https://${CalendarApi}.execute-api.${AWS::Region}.amazonaws.com/default/"
