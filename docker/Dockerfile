@@ -34,6 +34,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends unzip groff less git; \
     rm -rf /var/lib/apt/lists/*
 
+RUN uv pip install --system "calendar-auto-register[dev]"
+
 RUN set -eux; \
     case "${TARGETARCH}" in \
         ""|amd64) AWSCLI_ARCH="x86_64" ;; \

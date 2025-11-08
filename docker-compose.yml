@@ -1,23 +1,30 @@
+x-local-base: &local-base
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+    target: local
+    args:
+      APP_ENV: local
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+  environment:
+    APP_ENV: local
+    PYTHONPATH: app/src
+  stdin_open: true
+  tty: true
+  command: bash
+
 services:
   local:
+    <<: *local-base
     container_name: calendar-auto-register-local
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      target: local
-      args:
-        APP_ENV: local
-    working_dir: /workspace
-    volumes:
-      - .:/workspace
+
+  local-web:
+    <<: *local-base
+    container_name: calendar-auto-register-local-web
     ports:
       - "8000:8000"
-    environment:
-      APP_ENV: local
-      PYTHONPATH: app/src
-    stdin_open: true
-    tty: true
-    command: bash
 
   prod:
     container_name: calendar-auto-register
