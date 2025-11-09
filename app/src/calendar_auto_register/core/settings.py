@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Iterable
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -15,8 +15,6 @@ from botocore.exceptions import ClientError
 _DEFAULT_REGION = "ap-northeast-1"
 _DEFAULT_TZ = "Asia/Tokyo"
 _LOCAL_ENV = "local"
-
-
 @dataclass(slots=True)
 class Settings:
     """環境非依存で参照できる設定値の集合。"""
@@ -29,11 +27,10 @@ class Settings:
     google_client_id: str | None
     google_client_secret: str | None
     google_refresh_token: str | None
-    mail_from: str | None
+    mail_from: list[str]
     notify_recipients: list[str]
     allowlist_senders: list[str]
     bedrock_model_id: str | None
-    ssm_path_prefix: str | None = None
 
     @property
     def is_local(self) -> bool:
@@ -59,21 +56,36 @@ def _get_required_env(name: str) -> str:
     return value
 
 
-def _fetch_ssm_parameters(
-    region: str, names: Iterable[str], prefix: str
-) -> dict[str, str]:
-    name_list = [f"{prefix}/{name}" for name in names]
+def _load_dotenv_from_ssm(*, region: str) -> None:
+    """SSM に保存した dotenv 文字列を読み込み `os.environ` に適用する。"""
+
+    parameter_path = os.getenv("SSM_DOTENV_PARAMETER")
+    if not parameter_path:
+        raise RuntimeError(
+            "SSM_DOTENV_PARAMETER is not set. Configure it via Lambda environment variables or `.env.deploy`."
+        )
     client = boto3.client("ssm", region_name=region)
     try:
-        resp = client.get_parameters(Names=name_list, WithDecryption=True)
+        response = client.get_parameter(Name=parameter_path, WithDecryption=True)
     except ClientError as exc:  # pragma: no cover - boto3 例外ラップ
-        raise RuntimeError("SSM パラメータ取得に失敗しました。") from exc
+        raise RuntimeError(
+            f"Failed to load dotenv parameter from SSM: {parameter_path}"
+        ) from exc
 
-    found = {item["Name"]: item["Value"] for item in resp.get("Parameters", [])}
-    missing = {name for name in name_list if name not in found}
-    if missing:
-        raise ValueError(f"SSM パラメータ未設定: {', '.join(sorted(missing))}")
-    return found
+    blob = response["Parameter"]["Value"]
+    for raw_line in blob.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        os.environ.setdefault(key, value.strip())
 
 
 @lru_cache(maxsize=1)
@@ -82,55 +94,28 @@ def load_settings() -> Settings:
 
     app_env = os.getenv("APP_ENV", _LOCAL_ENV)
     region = os.getenv("REGION", _DEFAULT_REGION)
+    if app_env != _LOCAL_ENV:
+        _load_dotenv_from_ssm(region=region)
+
     raw_mail_bucket = os.getenv("S3_RAW_MAIL_BUCKET", "")
     # タイムゾーンは JST 固定運用とする。
     timezone_default = _DEFAULT_TZ
 
-    if app_env == _LOCAL_ENV:
-        return Settings(
-            app_env=app_env,
-            region=region,
-            raw_mail_bucket=raw_mail_bucket,
-            timezone_default=timezone_default,
-            gcal_calendar_id=_get_required_env("GCAL_CALENDAR_ID"),
-            google_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
-            google_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
-            google_refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-            mail_from=os.getenv("MAIL_FROM"),
-            notify_recipients=_load_json_list(os.getenv("NOTIFY_RECIPIENTS")),
-            allowlist_senders=_load_json_list(os.getenv("ALLOWLIST_SENDERS")),
-            bedrock_model_id=os.getenv("BEDROCK_MODEL_ID"),
-            ssm_path_prefix=None,
-        )
-
-    prefix = os.getenv("SSM_PATH_PREFIX", "/app/prod")
-    required_keys = [
-        "google/oauth_client_id",
-        "google/oauth_client_secret",
-        "google/refresh_token",
-        "google/calendar_id",
-        "mail/from",
-        "mail/notify_recipients",
-        "allowlist_senders",
-        "bedrock/model_id",
-    ]
-    values = _fetch_ssm_parameters(region=region, names=required_keys, prefix=prefix)
-
-    def from_ssm(key: str) -> str:
-        return values[f"{prefix}/{key}"]
+    mail_from_values = _load_json_list(os.getenv("MAIL_FROM"))
+    if not mail_from_values:
+        raise ValueError("環境変数 MAIL_FROM が未設定です。")
 
     return Settings(
         app_env=app_env,
         region=region,
         raw_mail_bucket=raw_mail_bucket,
         timezone_default=timezone_default,
-        gcal_calendar_id=from_ssm("google/calendar_id"),
-        google_client_id=from_ssm("google/oauth_client_id"),
-        google_client_secret=from_ssm("google/oauth_client_secret"),
-        google_refresh_token=from_ssm("google/refresh_token"),
-        mail_from=from_ssm("mail/from"),
-        notify_recipients=_load_json_list(from_ssm("mail/notify_recipients")),
-        allowlist_senders=_load_json_list(from_ssm("allowlist_senders")),
-        bedrock_model_id=from_ssm("bedrock/model_id"),
-        ssm_path_prefix=prefix,
+        gcal_calendar_id=_get_required_env("GCAL_CALENDAR_ID"),
+        google_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
+        google_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
+        google_refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
+        mail_from=mail_from_values,
+        notify_recipients=_load_json_list(os.getenv("NOTIFY_RECIPIENTS")),
+        allowlist_senders=_load_json_list(os.getenv("ALLOWLIST_SENDERS")),
+        bedrock_model_id=os.getenv("BEDROCK_MODEL_ID"),
     )

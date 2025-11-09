@@ -24,7 +24,7 @@ def invoke_model(
     body: bytes,
     content_type: str = "application/json",
 ) -> dict[str, Any]:
-    """Bedrock モデルを呼び出して JSON レスポンスを返す。"""
+    """Bedrock モデルを呼び出して JSON レスポンスを返す"""
 
     client = get_client(region)
     response = client.invoke_model(
