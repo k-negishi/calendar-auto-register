@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("GCAL_CALENDAR_ID", "primary")
 os.environ.setdefault("S3_RAW_MAIL_BUCKET", "calendar-auto-register")
+os.environ.setdefault("MAIL_FROM", '["no-reply@example.com"]')
 
 import pytest
 
@@ -16,5 +17,6 @@ def basic_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("GCAL_CALENDAR_ID", "primary")
     monkeypatch.setenv("S3_RAW_MAIL_BUCKET", "calendar-auto-register")
+    monkeypatch.setenv("MAIL_FROM", '["no-reply@example.com"]')
     monkeypatch.delenv("APP_ENV", raising=False)
     core_settings.load_settings.cache_clear()
