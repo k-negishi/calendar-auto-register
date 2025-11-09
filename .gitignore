@@ -3,5 +3,6 @@
 /app/src/calendar_auto_register.egg-info/
 .venv/
 /.env.deploy
+/.env.prod
 /.aws-sam/
 /.env.local
