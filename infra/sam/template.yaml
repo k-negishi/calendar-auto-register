@@ -11,6 +11,14 @@ Parameters:
     Type: String
     Default: latest
     Description: Docker tag used when building the Lambda image.
+  SsmDotenvParameter:
+    Type: String
+    Default: /calendar-auto-register/dotenv
+    Description: Full SSM Parameter Store path storing the prod dotenv content.
+  S3RawMailBucketName:
+    Type: String
+    Default: calendar-auto-register
+    Description: S3 bucket that stores RAW `.eml` files (used for IAM policy).
 
 Globals:
   Function:
@@ -30,8 +38,23 @@ Resources:
       Environment:
         Variables:
           APP_ENV: prod
+          SSM_DOTENV_PARAMETER: !Ref SsmDotenvParameter
       Policies:
         - AWSLambdaBasicExecutionRole
+        - Statement:
+            Effect: Allow
+            Action: "ssm:GetParameter"
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmDotenvParameter}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - "s3:GetObject"
+              - "s3:GetObjectVersion"
+            Resource: !Sub "arn:aws:s3:::${S3RawMailBucketName}/*"
+        - Statement:
+            Effect: Allow
+            Action: "s3:ListBucket"
+            Resource: !Sub "arn:aws:s3:::${S3RawMailBucketName}"
       Events:
         ApiRoot:
           Type: Api
