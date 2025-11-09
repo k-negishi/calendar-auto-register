@@ -7,6 +7,9 @@ x-local-base: &local-base
   working_dir: /workspace
   volumes:
     - .:/workspace
+    - ~/.aws:/root/.aws:ro
+  env_file:
+    - .env.local
   environment:
     APP_ENV: local
     PYTHONPATH: app/src
