@@ -4,3 +4,4 @@
 .venv/
 /.env.deploy
 /.aws-sam/
+/.env.local
