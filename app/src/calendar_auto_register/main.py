@@ -15,7 +15,7 @@ _handler = Mangum(app)
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> Any:
-    """AWS Lambda から呼び出されるエントリポイント。"""
+    """AWS Lambda から呼び出されるエントリポイント"""
     return _handler(event, context)
 
 
