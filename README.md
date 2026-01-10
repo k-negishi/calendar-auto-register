@@ -34,30 +34,8 @@
 - LINE Notify API（登録通知）
 
 
-#### システムフロー
-
-```
-[Email Client]
-    ↓
-[AWS SES] メール受信
-    ↓
-[S3: RAW Mail] メール保存
-    ↓
-[EventBridge] S3:PutObject イベント
-    ↓
-[Step Functions] ワークフロー管理
-    ↓
-[S3: RAW Mail] メール取得
-    ↓
-[API Gateway]
-    ↓
-[Lambda: Lambdalith]
-    ├─ POST /mail/parse         → メールをS3から取得
-    ├─ POST /llm/extract-event  → LLM でメール解析
-    ├─ POST /calendar/events    → カレンダー登録
-    ├─ POST /line/notify        → LINE 通知
-    └─ GET  /healthz            → ヘルスチェック
-```
+#### アーキテクチャ図
+![architecture.png](docs/architecture.png)
 
 ### Step Functions ワークフロー
 
