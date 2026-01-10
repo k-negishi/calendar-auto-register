@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,10 +10,31 @@ from pydantic import BaseModel, ConfigDict, Field
 from calendar_auto_register.shared.schemas.calendar_events import CalendarEventResult, ErrorModel
 
 
+class AttachmentModel(BaseModel):
+    name: str | None = None
+    content_type: str | None = None
+    s3_uri: str | None = None
+
+
+class NormalizedMailModel(BaseModel):
+    """入力: メール解析済みデータ（通知用途のため任意）"""
+
+    from_addr: str | None = None
+    reply_to: str | None = None
+    subject: str | None = None
+    received_at: datetime | None = None
+    text: str | None = None
+    html: str | None = None
+    attachments: list[AttachmentModel] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class LineNotifyRequest(BaseModel):
     """LINE通知リクエスト。Google Calendar登録結果を通知する"""
 
     results: list[CalendarEventResult] = Field(default_factory=list)
+    normalized_mail: NormalizedMailModel | None = None
 
     model_config = ConfigDict(extra="forbid")
 
