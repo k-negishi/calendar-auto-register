@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from calendar_auto_register.shared.schemas.calendar_events import CalendarEventsResponse, ErrorModel
+from calendar_auto_register.shared.schemas.calendar_events import CalendarEventResult, ErrorModel
 
 
-class LineNotifyRequest(CalendarEventsResponse):
-    """LINE通知リクエスト。"""
+class LineNotifyRequest(BaseModel):
+    """LINE通知リクエスト。Google Calendar登録結果を通知する"""
+
+    results: list[CalendarEventResult] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class LineNotifyResponse(BaseModel):
