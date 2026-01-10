@@ -6,3 +6,5 @@
 /.env.prod
 /.aws-sam/
 /.env.local
+/.codex/AGENTS.md
+/.claude/CLAUDE.me
