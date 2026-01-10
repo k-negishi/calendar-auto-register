@@ -75,7 +75,7 @@ def extract_events(
         output_parser = JsonOutputParser(pydantic_object=EventExtractionResponse)
 
         # Runnable チェーン（LLM → JSON パーサー）
-        # リトライ機能付き: 最大3回、エクスポーネンシャルバックオフ
+        # リトライ機能付き: 最大5回、エクスポーネンシャルバックオフ
         chain = (chat | output_parser).with_retry(
             retry_if_exception_type=(ValueError, RuntimeError),
             stop_after_attempt=5,
@@ -97,7 +97,10 @@ def extract_events(
         ]
 
         # チェーン実行（リトライ付き）
-        parsed_response = chain.invoke(messages)
+        parsed_dict = chain.invoke(messages)
+
+        # JsonOutputParser は dict を返すため、Pydantic で検証
+        parsed_response = EventExtractionResponse(**parsed_dict)
 
         # 抽出された予定を返す
         return parsed_response.events
