@@ -28,7 +28,6 @@ class CalendarEvent:
     end_at: datetime
     timezone: str
     location: str | None = None
-    attendees: list[str] = field(default_factory=list)
     description: str | None = None
 
     def to_google_event(self) -> dict[str, object]:
@@ -45,6 +44,4 @@ class CalendarEvent:
             body["location"] = self.location
         if self.description:
             body["description"] = self.description
-        if self.attendees:
-            body["attendees"] = [{"email": email} for email in self.attendees]
         return body
