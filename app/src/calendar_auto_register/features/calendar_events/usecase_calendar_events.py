@@ -258,10 +258,6 @@ def _build_google_event_body(event: CalendarEventModel) -> dict[str, Any]:
         body["location"] = event.location
     if event.description:
         body["description"] = event.description
-    if event.attendees:
-        body["attendees"] = [
-            attendee.model_dump(exclude_none=True) for attendee in event.attendees
-        ]
     if event.eventType:
         body["eventType"] = event.eventType
     return body
