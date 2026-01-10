@@ -9,7 +9,6 @@ import httpx
 
 from calendar_auto_register.clients.http_client import create_sync_client
 
-
 LINE_PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push"
 
 

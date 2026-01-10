@@ -8,9 +8,9 @@ import boto3  # type: ignore[import-untyped]
 from langchain_core.runnables.retry import ExponentialJitterParams
 
 try:  # テスト時にパッチできるようにモジュール変数として保持する
-    from langchain_aws import ChatBedrock as ChatBedrock
+    from langchain_aws import ChatBedrock
 except ModuleNotFoundError:  # pragma: no cover - 環境依存
-    ChatBedrock = None
+    ChatBedrock = None  # type: ignore
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
@@ -65,8 +65,8 @@ def extract_events(
         if ChatBedrock is None:
             raise RuntimeError("langchain_aws がインストールされていません。")
 
-        chat = ChatBedrock(
-            model_id=settings.bedrock_model_id,
+        chat: Any = ChatBedrock(
+            model=settings.bedrock_model_id,
             client=bedrock_client,
             model_kwargs={"max_tokens": 2048},
         )

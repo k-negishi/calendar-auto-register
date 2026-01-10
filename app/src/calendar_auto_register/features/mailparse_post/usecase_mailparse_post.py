@@ -5,8 +5,8 @@ from __future__ import annotations
 import email
 import email.policy
 import email.utils
-from email.message import EmailMessage
 from dataclasses import asdict
+from email.message import EmailMessage
 from typing import Any
 
 from calendar_auto_register.clients import s3_client

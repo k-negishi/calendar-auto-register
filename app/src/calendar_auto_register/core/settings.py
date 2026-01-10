@@ -6,11 +6,9 @@ import json
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
-
 
 _DEFAULT_REGION = "ap-northeast-1"
 _DEFAULT_TZ = "Asia/Tokyo"
@@ -61,7 +59,8 @@ def _load_dotenv_from_ssm(*, region: str) -> None:
     parameter_path = os.getenv("SSM_DOTENV_PARAMETER")
     if not parameter_path:
         raise RuntimeError(
-            "SSM_DOTENV_PARAMETER is not set. Configure it via Lambda environment variables or `.env.deploy`."
+            "SSM_DOTENV_PARAMETER is not set. "
+            "Configure it via Lambda environment variables or `.env.deploy`."
         )
     client = boto3.client("ssm", region_name=region)
     try:

@@ -8,6 +8,7 @@ from calendar_auto_register.core.settings import Settings
 from calendar_auto_register.features.mailparse_post.schemas_mailparse_post import (
     MailParseRequest,
     MailParseResponse,
+    NormalizedMailModel,
 )
 from calendar_auto_register.features.mailparse_post.usecase_mailparse_post import (
     parse_mail,
@@ -29,4 +30,4 @@ async def mail_parse(
         normalized = parse_mail(payload, settings=settings)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return MailParseResponse(normalized_mail=normalized)
+    return MailParseResponse(normalized_mail=NormalizedMailModel(**normalized))

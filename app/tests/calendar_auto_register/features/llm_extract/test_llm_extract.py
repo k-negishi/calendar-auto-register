@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,48 @@ def _create_mock_response(text: str) -> MagicMock:
     mock_response = MagicMock()
     mock_response.content = text
     return mock_response
+
+
+def _mock_bedrock_chain(response_dict: dict[str, Any]) -> MagicMock:
+    """LangChain チェーン (chat | output_parser).with_retry() をモック
+
+    Returns:
+        mock_chat_instance
+    """
+    # チェーンが返すべき辞書をモック
+    mock_chat_instance = MagicMock()
+
+    # チェーン全体をモック: chat | output_parser がこのレスポンスを返す
+    mock_chat_instance.__or__ = MagicMock()
+    mock_pipe_output = MagicMock()
+    mock_pipe_output.with_retry = MagicMock(return_value=MagicMock(
+        invoke=MagicMock(return_value=response_dict)
+    ))
+    mock_chat_instance.__or__.return_value = mock_pipe_output
+
+    return mock_chat_instance
+
+
+def _mock_bedrock_chain_with_exception(exc: Exception) -> MagicMock:
+    """LangChain チェーン (chat | output_parser).with_retry() をモック（例外発生版）
+
+    Args:
+        exc: チェーンが発生させるべき例外
+
+    Returns:
+        mock_chat_instance
+    """
+    mock_chat_instance = MagicMock()
+
+    # チェーン全体をモック: chat | output_parser が例外を発生させる
+    mock_chat_instance.__or__ = MagicMock()
+    mock_pipe_output = MagicMock()
+    mock_pipe_output.with_retry = MagicMock(return_value=MagicMock(
+        invoke=MagicMock(side_effect=exc)
+    ))
+    mock_chat_instance.__or__.return_value = mock_pipe_output
+
+    return mock_chat_instance
 
 
 # テスト実行前に環境変数をセット
@@ -67,10 +110,20 @@ def test_正常な予定を抽出できる() -> None:
 
     with patch(
         "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
-    ) as mock_chat_class:
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
         mock_chat_instance = MagicMock()
         mock_chat_class.return_value = mock_chat_instance
-        mock_chat_instance.invoke.return_value = _create_mock_response(response_text)
+        mock_boto_client.return_value = MagicMock()
+
+        # チェーン全体をモック: chat | output_parser がこのレスポンスを返す
+        mock_chat_instance.__or__ = MagicMock()
+        mock_pipe_output = MagicMock()
+        mock_pipe_output.with_retry = MagicMock(return_value=MagicMock(
+            invoke=MagicMock(return_value=json.loads(response_text))
+        ))
+        mock_chat_instance.__or__.return_value = mock_pipe_output
 
         client = TestClient(create_app())
         payload = {
@@ -99,7 +152,7 @@ def test_正常な予定を抽出できる() -> None:
 def test_複数の予定を抽出できる() -> None:
     """複数の予定が含まれるメールから全て抽出できることを検証する。"""
 
-    response_text = json.dumps({
+    response_dict = {
         "events": [
             {
                 "summary": "朝礼",
@@ -128,14 +181,16 @@ def test_複数の予定を抽出できる() -> None:
                 "description": "四半期決算について"
             },
         ]
-    })
+    }
 
     with patch(
         "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
-    ) as mock_chat_class:
-        mock_chat_instance = MagicMock()
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        mock_chat_instance = _mock_bedrock_chain(response_dict)
         mock_chat_class.return_value = mock_chat_instance
-        mock_chat_instance.invoke.return_value = _create_mock_response(response_text)
+        mock_boto_client.return_value = MagicMock()
 
         client = TestClient(create_app())
         payload = {
@@ -163,14 +218,16 @@ def test_複数の予定を抽出できる() -> None:
 def test_予定がない場合は空配列を返す() -> None:
     """予定が抽出されない場合、空配列を返すことを検証する。"""
 
-    response_text = json.dumps({"events": []})
+    response_dict = {"events": []}
 
     with patch(
         "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
-    ) as mock_chat_class:
-        mock_chat_instance = MagicMock()
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        mock_chat_instance = _mock_bedrock_chain(response_dict)
         mock_chat_class.return_value = mock_chat_instance
-        mock_chat_instance.invoke.return_value = _create_mock_response(response_text)
+        mock_boto_client.return_value = MagicMock()
 
         client = TestClient(create_app())
         payload = {
@@ -195,14 +252,17 @@ def test_予定がない場合は空配列を返す() -> None:
 def test_LLMが無効なJSONを返した場合は400エラー() -> None:
     """LLM が無効な JSON を返した場合、400 エラーになることを検証する。"""
 
-    response_text = "This is not valid JSON {invalid}"
-
     with patch(
         "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
-    ) as mock_chat_class:
-        mock_chat_instance = MagicMock()
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        # JsonOutputParser が失敗する場合をシミュレート
+        mock_chat_instance = _mock_bedrock_chain_with_exception(
+            ValueError("Invalid JSON format")
+        )
         mock_chat_class.return_value = mock_chat_instance
-        mock_chat_instance.invoke.return_value = _create_mock_response(response_text)
+        mock_boto_client.return_value = MagicMock()
 
         client = TestClient(create_app())
         payload = {
@@ -225,27 +285,19 @@ def test_LLMが無効なJSONを返した場合は400エラー() -> None:
 def test_LLMが必須フィールドを欠いた場合は400エラー() -> None:
     """LLM が必須フィールド（summary）を省略した場合、400 エラーになることを検証する。"""
 
-    response_text = json.dumps({
-        "events": [
-            {
-                "start": {
-                    "dateTime": "2024-12-25T14:00:00+09:00",
-                    "timeZone": "Asia/Tokyo",
-                },
-                "end": {
-                    "dateTime": "2024-12-25T15:00:00+09:00",
-                    "timeZone": "Asia/Tokyo",
-                },
-            }
-        ]
-    })
+    from pydantic import ValidationError
 
     with patch(
         "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
-    ) as mock_chat_class:
-        mock_chat_instance = MagicMock()
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        # Pydantic 検証エラーをシミュレート
+        mock_chat_instance = _mock_bedrock_chain_with_exception(
+            ValueError("Missing required field: summary")
+        )
         mock_chat_class.return_value = mock_chat_instance
-        mock_chat_instance.invoke.return_value = _create_mock_response(response_text)
+        mock_boto_client.return_value = MagicMock()
 
         client = TestClient(create_app())
         payload = {
@@ -270,11 +322,15 @@ def test_LLMエラーは500エラーになる() -> None:
 
     with patch(
         "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
-    ) as mock_chat_class:
-        mock_chat_instance = MagicMock()
-        mock_chat_class.return_value = mock_chat_instance
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
         # API エラーをシミュレート
-        mock_chat_instance.invoke.side_effect = RuntimeError("Bedrock API is unavailable")
+        mock_chat_instance = _mock_bedrock_chain_with_exception(
+            RuntimeError("Bedrock API is unavailable")
+        )
+        mock_chat_class.return_value = mock_chat_instance
+        mock_boto_client.return_value = MagicMock()
 
         client = TestClient(create_app())
         payload = {
@@ -319,7 +375,7 @@ def test_入力に不要なフィールドがある場合は拒否() -> None:
 def test_Google_Calendar形式を検証() -> None:
     """抽出されたイベントがGoogle Calendar API互換形式であることを検証する。"""
 
-    response_text = json.dumps({
+    response_dict = {
         "events": [
             {
                 "summary": "診察 - 内科",
@@ -335,14 +391,16 @@ def test_Google_Calendar形式を検証() -> None:
                 "description": "患者名: 山田太郎\n症状: 風邪"
             }
         ]
-    })
+    }
 
     with patch(
         "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
-    ) as mock_chat_class:
-        mock_chat_instance = MagicMock()
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        mock_chat_instance = _mock_bedrock_chain(response_dict)
         mock_chat_class.return_value = mock_chat_instance
-        mock_chat_instance.invoke.return_value = _create_mock_response(response_text)
+        mock_boto_client.return_value = MagicMock()
 
         client = TestClient(create_app())
         payload = {

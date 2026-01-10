@@ -10,8 +10,8 @@ from fastapi.exception_handlers import http_exception_handler, request_validatio
 from fastapi.exceptions import RequestValidationError
 from starlette.responses import Response
 
-from .core.middleware import api_key_middleware, request_id_middleware
 from .core.logging import log_error
+from .core.middleware import api_key_middleware, request_id_middleware
 from .core.settings import load_settings
 from .features.calendar_events.router_calendar_events import router as calendar_router
 from .features.line_notify_post.router_line_notify_post import router as line_router

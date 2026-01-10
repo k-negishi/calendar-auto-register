@@ -17,7 +17,6 @@ from calendar_auto_register.shared.schemas.calendar_events import (
     ErrorModel,
 )
 
-
 _DUPLICATE_WINDOW_MINUTES = 15
 _SUMMARY_PREFIX = "⚙️ "
 

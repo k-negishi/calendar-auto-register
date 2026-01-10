@@ -7,7 +7,6 @@ import logging
 import traceback
 from typing import Any
 
-
 _LOGGER = logging.getLogger("calendar_auto_register")
 
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from calendar_auto_register.clients import line_client
-from calendar_auto_register.shared.schemas.calendar_events import CalendarEventResult
 from calendar_auto_register.core.settings import Settings
+from calendar_auto_register.shared.schemas.calendar_events import CalendarEventResult
 
 
 def send_line_notification(

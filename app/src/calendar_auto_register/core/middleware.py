@@ -7,10 +7,8 @@ import uuid
 from typing import Awaitable, Callable
 
 from fastapi import Request, Response
-from starlette.responses import JSONResponse
 
 from calendar_auto_register.core.logging import log_request
-
 
 RequestHandler = Callable[[Request], Awaitable[Response]]
 

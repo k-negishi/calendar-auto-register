@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from calendar_auto_register.clients.line_client import LineApiError
-from calendar_auto_register.shared.schemas.calendar_events import ErrorModel
 from calendar_auto_register.core.settings import Settings
 from calendar_auto_register.features.line_notify_post.schemas_line_notify_post import (
     LineNotifyErrorResponse,
@@ -15,6 +14,7 @@ from calendar_auto_register.features.line_notify_post.schemas_line_notify_post i
 from calendar_auto_register.features.line_notify_post.usecase_line_notify_post import (
     send_line_notification,
 )
+from calendar_auto_register.shared.schemas.calendar_events import ErrorModel
 
 router = APIRouter(prefix="/line", tags=["line"])
 

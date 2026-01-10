@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from calendar_auto_register.shared.schemas.calendar import GoogleCalendarEventModel
 
+
 class AttachmentModel(BaseModel):
     name: str | None = None
     content_type: str | None = None

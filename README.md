@@ -180,8 +180,13 @@ curl -X POST http://localhost:8000/line/notify \
 開発コンテナ内で以下のコマンドを実行すると、フェーズ1で整備したツールが順番に動作する。
 
 ```bash
+# テスト実行
 docker compose run --rm local uv run pytest
-docker compose run --rm local uv run ruff check
+
+# Lint 自動修正
+docker compose run --rm local uv run ruff check --fix
+
+# 型チェック
 docker compose run --rm local uv run mypy app/src
 ```
 
