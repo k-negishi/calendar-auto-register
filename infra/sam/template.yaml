@@ -48,6 +48,11 @@ Resources:
         - Statement:
             Effect: Allow
             Action:
+              - "bedrock:InvokeModel"
+            Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+        - Statement:
+            Effect: Allow
+            Action:
               - "s3:GetObject"
               - "s3:GetObjectVersion"
             Resource: !Sub "arn:aws:s3:::${S3RawMailBucketName}/*"
