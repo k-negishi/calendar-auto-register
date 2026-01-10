@@ -29,6 +29,7 @@ class Settings:
     bedrock_model_id: str | None
     line_channel_access_token: str | None
     line_user_id: str | None
+    api_key: str | None
 
     @property
     def is_local(self) -> bool:
@@ -110,4 +111,5 @@ def load_settings() -> Settings:
         bedrock_model_id=os.getenv("BEDROCK_MODEL_ID"),
         line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"),
         line_user_id=os.getenv("LINE_USER_ID"),
+        api_key=os.getenv("API_KEY"),
     )

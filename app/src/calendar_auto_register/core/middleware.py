@@ -7,11 +7,41 @@ import uuid
 from typing import Awaitable, Callable
 
 from fastapi import Request, Response
+from starlette.responses import JSONResponse
 
 from calendar_auto_register.core.logging import log_request
 
 
 RequestHandler = Callable[[Request], Awaitable[Response]]
+
+
+async def api_key_middleware(request: Request, call_next: RequestHandler) -> Response:
+    """API キー認証ミドルウェア。ローカル環境では認証スキップ。"""
+
+    from calendar_auto_register.core.settings import load_settings
+
+    settings = load_settings()
+
+    # ローカル環境では認証スキップ
+    if settings.is_local:
+        return await call_next(request)
+
+    # # 本番環境では API キーをチェック
+    # auth_header = request.headers.get("Authorization", "")
+    # if not auth_header.startswith("Bearer "):
+    #     return JSONResponse(
+    #         {"detail": "Invalid or missing Authorization header"},
+    #         status_code=401,
+    #     )
+    #
+    # provided_key = auth_header[len("Bearer ") :].strip()
+    # if not settings.api_key or provided_key != settings.api_key:
+    #     return JSONResponse(
+    #         {"detail": "Unauthorized"},
+    #         status_code=401,
+    #     )
+
+    return await call_next(request)
 
 
 async def request_id_middleware(request: Request, call_next: RequestHandler) -> Response:

@@ -10,7 +10,7 @@ from fastapi.exception_handlers import http_exception_handler, request_validatio
 from fastapi.exceptions import RequestValidationError
 from starlette.responses import Response
 
-from .core.middleware import request_id_middleware
+from .core.middleware import api_key_middleware, request_id_middleware
 from .core.logging import log_error
 from .core.settings import load_settings
 from .features.calendar_events.router_calendar_events import router as calendar_router
@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
     logging.getLogger("calendar_auto_register").setLevel(log_level)
     app = FastAPI(title="calendar-auto-register", version="0.1.0")
     app.state.settings = settings  # type: ignore[attr-defined]
+    app.middleware("http")(api_key_middleware)
     app.middleware("http")(request_id_middleware)
 
     @app.exception_handler(HTTPException)
