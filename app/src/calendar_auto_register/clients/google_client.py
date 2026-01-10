@@ -2,35 +2,37 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Sequence
 
-from google.oauth2.credentials import Credentials
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import Resource, build
 
 from calendar_auto_register.core.settings import Settings
 
-GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
 
 
-def build_credentials(
+def build_credentials_from_service_account(
     *,
-    client_id: str,
-    client_secret: str,
-    refresh_token: str,
+    raw_credentials: str,
     scopes: Sequence[str] | None = None,
 ) -> Credentials:
-    """Refresh Token を利用して Google API 認証情報を構築する。"""
+    """Service Account を利用して Google API 認証情報を構築する。"""
 
     scopes = list(scopes or [GOOGLE_CALENDAR_SCOPE])
-    return Credentials(
-        token=None,
-        refresh_token=refresh_token,
-        client_id=client_id,
-        client_secret=client_secret,
-        token_uri=GOOGLE_TOKEN_URI,
-        scopes=scopes,
-    )
+    raw_credentials = raw_credentials.strip()
+
+    if raw_credentials.startswith("{"):
+        info = json.loads(raw_credentials)
+        return Credentials.from_service_account_info(info, scopes=scopes)
+
+    path = Path(raw_credentials).expanduser()
+    if not path.exists():
+        raise ValueError("GOOGLE_CREDENTIALS に指定されたファイルが見つかりません。")
+
+    return Credentials.from_service_account_file(path, scopes=scopes)
 
 
 def build_calendar_service(*, credentials: Credentials) -> Resource:
@@ -42,16 +44,10 @@ def build_calendar_service(*, credentials: Credentials) -> Resource:
 def service_from_settings(settings: Settings) -> Resource:
     """Settings から必要情報を取り出して Calendar Service を生成する。"""
 
-    if not (
-        settings.google_client_id
-        and settings.google_client_secret
-        and settings.google_refresh_token
-    ):
-        raise ValueError("Google API 用のクライアント資格情報が不足しています。")
+    if not settings.google_credentials:
+        raise ValueError("GOOGLE_CREDENTIALS が未設定です。")
 
-    credentials = build_credentials(
-        client_id=settings.google_client_id,
-        client_secret=settings.google_client_secret,
-        refresh_token=settings.google_refresh_token,
+    credentials = build_credentials_from_service_account(
+        raw_credentials=settings.google_credentials,
     )
     return build_calendar_service(credentials=credentials)

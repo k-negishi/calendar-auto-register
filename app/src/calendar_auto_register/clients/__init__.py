@@ -6,6 +6,6 @@ __all__ = [
     "bedrock_client",
     "google_client",
     "http_client",
+    "line_client",
     "s3_client",
-    "ses_client",
 ]
