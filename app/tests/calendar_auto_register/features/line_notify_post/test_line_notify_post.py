@@ -35,7 +35,16 @@ def test_line_notify_success() -> None:
                     },
                     "google_event_id": "event-1",
                 }
-            ]
+            ],
+            "normalized_mail": {
+                "from_addr": "sales@example.com",
+                "reply_to": None,
+                "subject": "【12/25】営業会議のご案内",
+                "received_at": "2024-12-20T04:46:00Z",
+                "text": "各位\n\n営業会議のご案内です。",
+                "html": None,
+                "attachments": [],
+            },
         }
 
         res = client.post("/line/notify", json=payload)
