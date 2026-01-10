@@ -79,8 +79,7 @@ Google Calendar events.insert() API互換のJSON形式で応答するプロフ�
         "timeZone": "Asia/Tokyo"
       },
       "location": "住所・電話番号など",
-      "description": "詳細情報（改行可）",
-      "attendees": []
+      "description": "詳細情報（改行可）"
     }
   ]
 }
