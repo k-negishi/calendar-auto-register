@@ -23,14 +23,12 @@ class Settings:
     region: str
     raw_mail_bucket: str
     timezone_default: str
-    gcal_calendar_id: str
-    google_client_id: str | None
-    google_client_secret: str | None
-    google_refresh_token: str | None
-    mail_from: list[str]
-    notify_recipients: list[str]
+    calendar_id: str
+    google_credentials: str
     allowlist_senders: list[str]
     bedrock_model_id: str | None
+    line_channel_access_token: str | None
+    line_user_id: str | None
 
     @property
     def is_local(self) -> bool:
@@ -101,21 +99,15 @@ def load_settings() -> Settings:
     # タイムゾーンは JST 固定運用とする。
     timezone_default = _DEFAULT_TZ
 
-    mail_from_values = _load_json_list(os.getenv("MAIL_FROM"))
-    if not mail_from_values:
-        raise ValueError("環境変数 MAIL_FROM が未設定です。")
-
     return Settings(
         app_env=app_env,
         region=region,
         raw_mail_bucket=raw_mail_bucket,
         timezone_default=timezone_default,
-        gcal_calendar_id=_get_required_env("GCAL_CALENDAR_ID"),
-        google_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
-        google_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
-        google_refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        mail_from=mail_from_values,
-        notify_recipients=_load_json_list(os.getenv("NOTIFY_RECIPIENTS")),
+        calendar_id=_get_required_env("CALENDAR_ID"),
+        google_credentials=_get_required_env("GOOGLE_CREDENTIALS"),
         allowlist_senders=_load_json_list(os.getenv("ALLOWLIST_SENDERS")),
         bedrock_model_id=os.getenv("BEDROCK_MODEL_ID"),
+        line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"),
+        line_user_id=os.getenv("LINE_USER_ID"),
     )

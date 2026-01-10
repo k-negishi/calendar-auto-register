@@ -8,6 +8,8 @@ from typing import Awaitable, Callable
 
 from fastapi import Request, Response
 
+from calendar_auto_register.core.logging import log_request
+
 
 RequestHandler = Callable[[Request], Awaitable[Response]]
 
@@ -19,9 +21,16 @@ async def request_id_middleware(request: Request, call_next: RequestHandler) -> 
     request.state.request_id = request_id
 
     started = time.perf_counter()
+    request.state.request_started = started
     response = await call_next(request)
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     response.headers["X-Request-Id"] = request_id
     response.headers["X-Response-Time-Ms"] = str(latency_ms)
+    log_request(
+        path=request.url.path,
+        status=response.status_code,
+        request_id=request_id,
+        latency_ms=latency_ms,
+    )
     return response

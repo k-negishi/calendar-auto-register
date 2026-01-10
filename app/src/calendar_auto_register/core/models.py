@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
 
 
 @dataclass(slots=True)
@@ -49,14 +48,3 @@ class CalendarEvent:
         if self.attendees:
             body["attendees"] = [{"email": email} for email in self.attendees]
         return body
-
-
-@dataclass(slots=True)
-class NotificationPayload:
-    """SESで送付する処理結果のサマリ。"""
-
-    status: Literal["SUCCESS", "FAILURE", "DUPLICATED"]
-    request_id: str
-    summary: str
-    detail: str
-    event: CalendarEvent | None = None
