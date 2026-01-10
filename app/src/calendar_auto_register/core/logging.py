@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 from typing import Any
 
 
@@ -36,6 +37,7 @@ def log_error(
         "request_id": request_id,
         "latency_ms": latency_ms,
         "error_json": _to_error_json(error),
+        "traceback": traceback.format_exc(),
     }
     _LOGGER.error(json.dumps(payload, ensure_ascii=False))
 
