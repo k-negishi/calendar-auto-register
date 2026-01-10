@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import FastAPI, HTTPException, Request
@@ -22,6 +23,9 @@ def create_app() -> FastAPI:
     """コア設定や共通ミドルウェアを組み込んだ FastAPI アプリを返す。"""
 
     settings = load_settings()
+    log_level = logging.DEBUG if settings.is_local else logging.INFO
+    logging.basicConfig(level=log_level, format="%(message)s")
+    logging.getLogger("calendar_auto_register").setLevel(log_level)
     app = FastAPI(title="calendar-auto-register", version="0.1.0")
     app.state.settings = settings  # type: ignore[attr-defined]
     app.middleware("http")(request_id_middleware)
