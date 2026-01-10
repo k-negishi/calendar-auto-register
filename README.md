@@ -34,7 +34,7 @@
 - LINE Notify API（登録通知）
 
 
-#### アーキテクチャ図
+### アーキテクチャ図
 ![architecture.png](docs/architecture.png)
 
 ### Step Functions ワークフロー
