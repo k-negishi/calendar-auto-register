@@ -60,8 +60,7 @@ def test_正常な予定を抽出できる() -> None:
                     "timeZone": "Asia/Tokyo",
                 },
                 "location": "オンライン",
-                "description": None,
-                "attendees": [],
+                "description": None
             }
         ]
     })
@@ -113,8 +112,7 @@ def test_複数の予定を抽出できる() -> None:
                     "timeZone": "Asia/Tokyo",
                 },
                 "location": None,
-                "description": None,
-                "attendees": [],
+                "description": None
             },
             {
                 "summary": "営業会議",
@@ -127,8 +125,7 @@ def test_複数の予定を抽出できる() -> None:
                     "timeZone": "Asia/Tokyo",
                 },
                 "location": "オンライン",
-                "description": "四半期決算について",
-                "attendees": [{"email": "bob@example.com"}],
+                "description": "四半期決算について"
             },
         ]
     })
@@ -160,7 +157,7 @@ def test_複数の予定を抽出できる() -> None:
         assert len(data["events"]) == 2
         assert data["events"][0]["summary"] == "朝礼"
         assert data["events"][1]["summary"] == "営業会議"
-        assert data["events"][1]["attendees"][0]["email"] == "bob@example.com"
+        assert data["events"][1]["location"] == "オンライン"
 
 
 def test_予定がない場合は空配列を返す() -> None:
@@ -335,8 +332,7 @@ def test_Google_Calendar形式を検証() -> None:
                     "timeZone": "Asia/Tokyo",
                 },
                 "location": "太郎クリニック",
-                "description": "患者名: 山田太郎\n症状: 風邪",
-                "attendees": [],
+                "description": "患者名: 山田太郎\n症状: 風邪"
             }
         ]
     })

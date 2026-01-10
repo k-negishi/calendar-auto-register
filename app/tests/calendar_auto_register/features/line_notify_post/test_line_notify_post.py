@@ -31,7 +31,6 @@ def test_line_notify_success() -> None:
                         },
                         "location": "オンライン",
                         "description": "議題: 四半期決算",
-                        "attendees": [],
                         "eventType": "default",
                     },
                     "google_event_id": "event-1",
@@ -74,7 +73,6 @@ def test_line_notify_failure() -> None:
                         },
                         "location": "",
                         "description": None,
-                        "attendees": [],
                         "eventType": "default",
                     },
                     "error": {

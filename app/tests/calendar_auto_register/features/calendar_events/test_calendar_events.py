@@ -51,7 +51,6 @@ def test_bulk_create_event() -> None:
                     },
                     "location": "オンライン",
                     "description": "議題: 四半期決算",
-                    "attendees": [{"email": "bob@example.com"}],
                 }
             ]
         }
