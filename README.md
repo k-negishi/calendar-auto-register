@@ -52,11 +52,11 @@
 [API Gateway]
     ↓
 [Lambda: Lambdalith]
-    ├─ POST /mail/parse       → メールをS3から取得
-    ├─ POST /llm/extract      → LLM でメール解析
-    ├─ POST /calendar/events  → カレンダー登録
-    ├─ POST /line/notify      → LINE 通知
-    └─ GET  /healthz          → ヘルスチェック
+    ├─ POST /mail/parse         → メールをS3から取得
+    ├─ POST /llm/extract-event  → LLM でメール解析
+    ├─ POST /calendar/events    → カレンダー登録
+    ├─ POST /line/notify        → LINE 通知
+    └─ GET  /healthz            → ヘルスチェック
 ```
 
 ### Step Functions ワークフロー
@@ -72,7 +72,7 @@
 └────────────┬────────────────────┘
              ↓
 ┌─────────────────────────────────┐
-│ [API: POST /llm/extract]        │
+│ [API: POST /llm/extract-event]  │
 │ → LLM でメール解析                │
 └────────────┬────────────────────┘
              ↓
@@ -129,12 +129,27 @@ docker compose run --rm --service-ports local-web \
 # healthz
 curl -X GET http://localhost:8000/healthz
 
-# /mail/parse
+# /mail/parse(メール取得)
 curl -X POST http://localhost:8000/mail/parse \
   -H "Content-Type: application/json" \
   -d '{"s3_key":"2025/11/09/demo-mail.eml"}'
 
-# /calendar/events （bulk登録）
+# /llm/extract-event（メール本文から予定抽出）
+curl -X POST http://localhost:8000/llm/extract-event \
+  -H "Content-Type: application/json" \
+  -d '{
+    "normalized_mail": {
+      "from_addr": "sales@example.com",
+      "reply_to": null,
+      "subject": "【12/25】営業会議のご案内",
+      "received_at": "2024-12-20T04:46:00Z",
+      "text": "各位\n\nいつもお世話になっております。営業会議のご案内です。\n\n【日時】2024/12/25(水) 14:00-15:00\n【場所】オンライン\n【議題】四半期決算\n\nご出席のほどよろしくお願いいたします。\n",
+      "html": null,
+      "attachments": []
+    }
+  }'
+
+# /calendar/events(カレンダー一括登録)
 curl -X POST http://localhost:8000/calendar/events \
   -H "Content-Type: application/json" \
   -d '{
