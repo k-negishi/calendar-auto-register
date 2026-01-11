@@ -26,10 +26,16 @@ def _create_mock_response(text: str) -> MagicMock:
 def _mock_bedrock_chain(response_dict: dict[str, Any]) -> MagicMock:
     """LangChain チェーン (chat | output_parser).with_retry() をモック
 
+    実装では ChatBedrock が LLM レスポンス（AIMessage）を返し、
+    output_parser がその content（JSON 文字列）を parse() で処理するため、
+    チェーン全体で正規化が適用される。
+
     Returns:
         mock_chat_instance
     """
-    # チェーンが返すべき辞書をモック
+    # チェーンが返すべき辞書をモック（既に正規化済み）
+    # パーサーが parse() メソッドで正規化処理を行っているため、
+    # モックチェーンは正規化済みの辞書を返す必要がある
     mock_chat_instance = MagicMock()
 
     # チェーン全体をモック: chat | output_parser がこのレスポンスを返す
@@ -511,3 +517,59 @@ def test_支払い期限イベントを抽出できる() -> None:
         assert payment_event["start"]["dateTime"] == "2025-12-30T20:00:00+09:00"
         assert payment_event["end"]["dateTime"] == "2025-12-30T23:59:00+09:00"
         assert payment_event.get("location") is None
+
+
+def test_全角文字を半角に正規化できる() -> None:
+    """LLM が返した全角英数字・記号を半角に正規化できることを検証する。"""
+
+    response_dict = {
+        "events": [
+            {
+                "summary": "Ｚｅｐｐ　ＤｉｖｅｒＣｉｔｙ（ＴＯＫＹＯ）",
+                "start": {
+                    "dateTime": "2026-04-03T19:00:00+09:00",
+                    "timeZone": "Asia/Tokyo",
+                },
+                "end": {
+                    "dateTime": "2026-04-03T22:00:00+09:00",
+                    "timeZone": "Asia/Tokyo",
+                },
+                "location": "Ｚｅｐｐ　ＤｉｖｅｒＣｉｔｙ（ＴＯＫＹＯ） (東京都)",
+                "description": "料金：４，５００円\n座席：１Ｆスタンディング",
+            }
+        ]
+    }
+
+    with patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        mock_chat_instance = _mock_bedrock_chain(response_dict)
+        mock_chat_class.return_value = mock_chat_instance
+        mock_boto_client.return_value = MagicMock()
+
+        client = TestClient(create_app())
+        payload = {
+            "normalized_mail": {
+                "from_addr": "ticket@example.com",
+                "reply_to": None,
+                "subject": "チケット当選のお知らせ",
+                "received_at": "2026-01-10T17:40:00Z",
+                "text": "Zepp DiverCity(TOKYO)でのライブイベント",
+                "html": None,
+                "attachments": [],
+            }
+        }
+
+        res = client.post("/llm/extract-event", json=payload)
+
+        assert res.status_code == 200
+        data = res.json()
+        event = data["events"][0]
+
+        # 全角が半角に正規化されていることを確認
+        assert event["summary"] == "Zepp DiverCity(TOKYO)", f"Expected 'Zepp DiverCity(TOKYO)' but got '{event['summary']}'"
+        assert event["location"] == "Zepp DiverCity(TOKYO) (東京都)", f"Expected 'Zepp DiverCity(TOKYO) (東京都)' but got '{event['location']}'"
+        assert "4,500円" in event["description"], f"Description should contain '4,500円' but got '{event['description']}'"
+        assert "1Fスタンディング" in event["description"], f"Description should contain '1Fスタンディング' but got '{event['description']}'"

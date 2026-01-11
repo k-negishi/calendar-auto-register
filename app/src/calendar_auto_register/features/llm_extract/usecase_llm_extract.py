@@ -243,8 +243,14 @@ def extract_events(
         # Pydantic で検証
         parsed_response = EventExtractionResponse(**parsed_dict)
 
+        # 最終的な正規化を適用（テストモックやパーサー経由でない場合に備える）
+        normalized_events = [
+            _normalize_event_to_half_width(event)
+            for event in parsed_response.events
+        ]
+
         # 正規化済みの予定を返す
-        return parsed_response.events
+        return normalized_events
 
     except ValueError as exc:
         raise exc
