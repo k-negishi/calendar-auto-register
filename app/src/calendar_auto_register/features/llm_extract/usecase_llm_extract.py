@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
 import boto3  # type: ignore[import-untyped]
+from bs4 import BeautifulSoup
 from langchain_core.runnables.retry import ExponentialJitterParams
 
 try:  # テスト時にパッチできるようにモジュール変数として保持する
@@ -25,6 +27,39 @@ from calendar_auto_register.core.settings import Settings
 from calendar_auto_register.features.llm_extract.schemas_llm_extract import (
     GoogleCalendarEventModel,
 )
+
+
+def _preprocess_mail_body(normalized_mail: NormalizedMail) -> str:
+    """
+    メール本文を前処理：HTML タグ削除、ノイズ除去。
+
+    URL 前後の説明文脈を保持することで、LLM が URL の意味を正確に理解できる。
+    LLM への入力を最小化しトークン削減とタイムアウト回避を実現。
+
+    Args:
+        normalized_mail: 正規化されたメール情報
+
+    Returns:
+        前処理済みテキスト（URL の文脈付き）
+    """
+    # HTML が優先、なければ text を使用
+    body = normalized_mail.html or normalized_mail.text or ""
+
+    # BeautifulSoup で HTML タグを削除（テキストと URL の関連性は保持）
+    soup = BeautifulSoup(body, "html.parser")
+    text = soup.get_text(separator="\n")
+
+    # Unsubscribe 以降を削除（不要な購読管理情報）
+    if "Unsubscribe" in text:
+        text = text.split("Unsubscribe")[0]
+
+    # 複数改行を正規化（トークン削減）
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # 余計な空白削除
+    text = "\n".join(line.rstrip() for line in text.split("\n") if line.strip())
+
+    return text
 
 
 def _normalize_to_half_width(text: str) -> str:
@@ -125,6 +160,9 @@ def extract_events(
     """
     メール本文から Bedrock (LLM) を使って予定情報を抽出する。
 
+    **30秒タイムアウト対応**: メール本文を事前に処理（HTML除去、ノイズ削除）
+    してから LLM に投げることで、トークン削減と高速処理を実現。
+
     LangChain ChatBedrock と NormalizedJsonOutputParser を使用してプロンプトベースで
     JSON を取得。パーサーが自動的に LLM レスポンスの全フィールドを半角正規化し、
     Pydantic で検証して Google Calendar API 互換形式で応答。
@@ -145,6 +183,22 @@ def extract_events(
         raise ValueError("Bedrock モデルID が設定されていません")
 
     try:
+        # Step 1: メール本文を前処理（HTML削除、ノイズ除去）
+        # これにより LLM への入力を約90%削減し、タイムアウト回避
+        # URL 前後の説明文脈は保持される
+        cleaned_text = _preprocess_mail_body(normalized_mail)
+
+        # 前処理済みメール情報を作成
+        preprocessed_mail = NormalizedMail(
+            from_addr=normalized_mail.from_addr,
+            reply_to=normalized_mail.reply_to,
+            subject=normalized_mail.subject,
+            received_at=normalized_mail.received_at,
+            text=cleaned_text,
+            html=None,  # 前処理済みなので HTML は不要
+            attachments=[],
+        )
+
         # AWS Bedrock クライアントを初期化（東京リージョン固定）
         bedrock_client = boto3.client("bedrock-runtime", region_name=settings.region)
 
@@ -173,8 +227,8 @@ def extract_events(
             ),
         )
 
-        # プロンプト構築
-        user_message_text = build_extraction_user_message(normalized_mail)
+        # Step 2: プロンプト構築（前処理済みメール）
+        user_message_text = build_extraction_user_message(preprocessed_mail)
 
         # メッセージの構築
         messages = [

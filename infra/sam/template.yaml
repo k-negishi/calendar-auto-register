@@ -22,7 +22,7 @@ Parameters:
 
 Globals:
   Function:
-    Timeout: 30
+    Timeout: 300
     MemorySize: 1024
     Tracing: Active
 

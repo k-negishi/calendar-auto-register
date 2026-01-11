@@ -186,7 +186,7 @@ def build_extraction_user_message(normalized_mail: NormalizedMail) -> str:
     body = normalized_mail.html or normalized_mail.text or "（本文なし）"
 
     message = f"""以下のメールから予定情報を抽出してください：
-    
+
 
 【メール情報】
 - 送信者: {from_addr}
