@@ -432,8 +432,8 @@ def test_Google_Calendar形式を検証() -> None:
         assert event["start"]["timeZone"] == "Asia/Tokyo"
 
 
-def test_支払い期限イベントを終日予定として抽出できる() -> None:
-    """支払い期限イベントを date 形式（終日予定）として抽出できることを検証する。"""
+def test_支払い期限イベントを抽出できる() -> None:
+    """支払い期限イベントを dateTime 形式で抽出できることを検証する。"""
 
     response_dict = {
         "events": [
@@ -453,10 +453,12 @@ def test_支払い期限イベントを終日予定として抽出できる() ->
             {
                 "summary": "支払い期限 23:59@コンサート@サンプルアリーナ東京",
                 "start": {
-                    "date": "2025-12-30"
+                    "dateTime": "2025-12-30T20:00:00+09:00",
+                    "timeZone": "Asia/Tokyo"
                 },
                 "end": {
-                    "date": "2025-12-31"
+                    "dateTime": "2025-12-30T23:59:00+09:00",
+                    "timeZone": "Asia/Tokyo"
                 },
                 "description": "支払い期限: 2025年12月30日 23:59\n支払い方法: コンビニ支払い\n払込票番号: 1234-5678-9012\n合計金額: ¥5,000"
             }
@@ -499,11 +501,13 @@ def test_支払い期限イベントを終日予定として抽出できる() ->
         assert "dateTime" in main_event["end"]
         assert "timeZone" in main_event["end"]
 
-        # 支払い期限イベント（date形式）の検証
+        # 支払い期限イベント（dateTime形式）の検証
         payment_event = data["events"][1]
         assert payment_event["summary"] == "支払い期限 23:59@コンサート@サンプルアリーナ東京"
-        assert "date" in payment_event["start"]
-        assert "date" in payment_event["end"]
-        assert payment_event["start"]["date"] == "2025-12-30"
-        assert payment_event["end"]["date"] == "2025-12-31"
+        assert "dateTime" in payment_event["start"]
+        assert "timeZone" in payment_event["start"]
+        assert "dateTime" in payment_event["end"]
+        assert "timeZone" in payment_event["end"]
+        assert payment_event["start"]["dateTime"] == "2025-12-30T20:00:00+09:00"
+        assert payment_event["end"]["dateTime"] == "2025-12-30T23:59:00+09:00"
         assert payment_event.get("location") is None

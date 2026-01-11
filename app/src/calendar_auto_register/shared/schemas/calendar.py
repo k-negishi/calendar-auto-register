@@ -24,8 +24,14 @@ class GoogleCalendarEventModel(BaseModel):
     """Google Calendar events.insert() 互換形式"""
 
     summary: str = Field(..., description="イベント名")
-    start: Union[DateModel, DateTimeModel] = Field(..., description="イベント開始日時（終日の場合はdate、時刻指定の場合はdateTime）")
-    end: Union[DateModel, DateTimeModel] = Field(..., description="イベント終了日時（終日の場合はdate、時刻指定の場合はdateTime）")
+    start: Union[DateModel, DateTimeModel] = Field(
+        ...,
+        description="イベント開始日時（終日の場合はdate、時刻指定の場合はdateTime）",
+    )
+    end: Union[DateModel, DateTimeModel] = Field(
+        ...,
+        description="イベント終了日時（終日の場合はdate、時刻指定の場合はdateTime）",
+    )
     location: str | None = None
     description: str | None = None
     eventType: str = "default"

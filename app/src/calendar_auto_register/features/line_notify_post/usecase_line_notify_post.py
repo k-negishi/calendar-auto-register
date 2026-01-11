@@ -58,10 +58,18 @@ def build_line_message(results: list[CalendarEventResult]) -> str:
             lines.append(f"{time_label}　{time_str}")
         elif hasattr(event.start, "dateTime") and hasattr(event.end, "dateTime"):
             # 時刻指定イベント（DateTimeModelの場合）
-            time_str = _format_datetime_range(
-                event.start.dateTime, event.end.dateTime
-            )
-            lines.append(f"日時　{time_str}")
+            if _is_payment_deadline_event(event.summary):
+                # 支払い期限イベント
+                time_str = _format_payment_deadline_datetime(
+                    event.start.dateTime, event.end.dateTime
+                )
+                lines.append(f"期限　{time_str}")
+            else:
+                # 通常の時刻指定イベント
+                time_str = _format_datetime_range(
+                    event.start.dateTime, event.end.dateTime
+                )
+                lines.append(f"日時　{time_str}")
 
         if event.location:
             lines.append(f"場所　{event.location}")
@@ -138,6 +146,23 @@ def _format_datetime_range(start_raw: str, end_raw: str) -> str:
         return f"{start_str}-{end_str}"
 
     return f"{start_raw}-{end_raw}"
+
+
+def _format_payment_deadline_datetime(start_raw: str, end_raw: str) -> str:
+    """
+    支払い期限イベントの日時をフォーマット（YYYY-MM-DD HH:MM形式）
+
+    Args:
+        start_raw: 開始日時（支払期限日の00:00:00）
+        end_raw: 終了日時（支払期限に指定された時刻）
+
+    Returns:
+        フォーマット済み日時文字列（例：2026-01-10 23:59）
+    """
+    end_dt = _parse_datetime(end_raw)
+    if end_dt:
+        return end_dt.strftime("%Y-%m-%d %H:%M")
+    return end_raw
 
 
 def _parse_datetime(value: str) -> datetime | None:
