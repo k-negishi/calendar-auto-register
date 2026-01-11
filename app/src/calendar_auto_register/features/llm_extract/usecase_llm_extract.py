@@ -123,7 +123,7 @@ def extract_events(
     settings: Settings,
 ) -> list[GoogleCalendarEventModel]:
     """
-    メール本文から Bedrock (Claude) を使って予定情報を抽出する。
+    メール本文から Bedrock (LLM) を使って予定情報を抽出する。
 
     LangChain ChatBedrock と NormalizedJsonOutputParser を使用してプロンプトベースで
     JSON を取得。パーサーが自動的に LLM レスポンスの全フィールドを半角正規化し、

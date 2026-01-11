@@ -49,7 +49,7 @@ Resources:
             Effect: Allow
             Action:
               - "bedrock:InvokeModel"
-            Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+            Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
         - Statement:
             Effect: Allow
             Action:

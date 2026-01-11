@@ -79,7 +79,7 @@ def setup_env() -> None:
         os.environ.setdefault("REGION", "ap-northeast-1")
         os.environ.setdefault("CALENDAR_ID", "test-calendar-id")
         os.environ.setdefault("GOOGLE_CREDENTIALS", "dummy")
-        os.environ.setdefault("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+        os.environ.setdefault("BEDROCK_MODEL_ID", "test-bedrock-model")
         os.environ.setdefault("ALLOWLIST_SENDERS", "[]")
         os.environ.setdefault("S3_RAW_MAIL_BUCKET", "test-bucket")
 
