@@ -20,6 +20,22 @@ else
   echo ">>> ${ENV_FILE} not found. Using existing environment variables."
 fi
 
+echo ">>> Uploading .env.prod to SSM Parameter Store"
+ENV_PROD_FILE="${REPO_ROOT}/.env.prod"
+if [[ ! -f "${ENV_PROD_FILE}" ]]; then
+  echo "ERROR: ${ENV_PROD_FILE} not found"
+  exit 1
+fi
+
+aws ssm put-parameter \
+  --name "${SSM_DOTENV_PARAMETER}" \
+  --type SecureString \
+  --value "$(cat "${ENV_PROD_FILE}")" \
+  --overwrite \
+  --region "${AWS_REGION}"
+
+echo ">>> Deployment and SSM parameter update completed successfully"
+
 cd "${REPO_ROOT}"
 
 AWS_REGION=${AWS_REGION:-ap-northeast-1}
