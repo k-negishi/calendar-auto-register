@@ -31,7 +31,7 @@
 - LangChain（LLM インターフェース）
 - Amazon Bedrock（LLM プロバイダー）
 - Google Calendar API（カレンダー登録）
-- LINE Notify API（登録通知）
+- LINE Message API（登録通知）
 
 
 ### アーキテクチャ図
