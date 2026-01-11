@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Union
+
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class DateModel(BaseModel):
+    """Google Calendar date形式（終日イベント）"""
+
+    date: str = Field(..., description="YYYY-MM-DD形式の日付（例: 2024-12-25）")
 
 
 class DateTimeModel(BaseModel):
@@ -16,8 +24,8 @@ class GoogleCalendarEventModel(BaseModel):
     """Google Calendar events.insert() 互換形式"""
 
     summary: str = Field(..., description="イベント名")
-    start: DateTimeModel
-    end: DateTimeModel
+    start: Union[DateModel, DateTimeModel] = Field(..., description="イベント開始日時（終日の場合はdate、時刻指定の場合はdateTime）")
+    end: Union[DateModel, DateTimeModel] = Field(..., description="イベント終了日時（終日の場合はdate、時刻指定の場合はdateTime）")
     location: str | None = None
     description: str | None = None
     eventType: str = "default"

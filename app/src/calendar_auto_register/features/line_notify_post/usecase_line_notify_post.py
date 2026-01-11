@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import date, datetime, timedelta
 
 from calendar_auto_register.clients import line_client
 from calendar_auto_register.core.settings import Settings
+from calendar_auto_register.shared.schemas.calendar import DateModel, GoogleCalendarEventModel
 from calendar_auto_register.shared.schemas.calendar_events import CalendarEventResult
 
 
@@ -48,7 +50,19 @@ def build_line_message(results: list[CalendarEventResult]) -> str:
         event = result.event
         label = _status_label(result.status)
         lines.append(f"{label}　{event.summary}")
-        lines.append(f"日時　{_format_datetime_range(event.start.dateTime, event.end.dateTime)}")
+
+        # 日時フォーマット（終日イベント or 時刻指定イベント）
+        if isinstance(event.start, DateModel) and isinstance(event.end, DateModel):
+            # 終日イベント
+            time_label, time_str = _format_all_day_event(event)
+            lines.append(f"{time_label}　{time_str}")
+        elif hasattr(event.start, "dateTime") and hasattr(event.end, "dateTime"):
+            # 時刻指定イベント（DateTimeModelの場合）
+            time_str = _format_datetime_range(
+                event.start.dateTime, event.end.dateTime
+            )
+            lines.append(f"日時　{time_str}")
+
         if event.location:
             lines.append(f"場所　{event.location}")
         if result.status == "FAILED" and result.error:
@@ -66,6 +80,48 @@ def _status_label(status: str) -> str:
         "DUPLICATED": "重複",
         "FAILED": "失敗",
     }.get(status, status)
+
+
+def _is_payment_deadline_event(summary: str) -> bool:
+    """支払い期限イベントかどうか判定"""
+    return "支払い期限 " in summary
+
+
+def _format_all_day_event(event: GoogleCalendarEventModel) -> tuple[str, str]:
+    """
+    終日イベントをフォーマット
+
+    Returns:
+        (ラベル, 日時文字列)
+        例: ("期限", "2025-12-30 23:59")
+        例: ("日時", "2025-12-30 (終日)")
+    """
+    # 型チェック
+    if not isinstance(event.start, DateModel) or not isinstance(event.end, DateModel):
+        return ("日時", "")
+
+    # 支払い期限イベントの場合
+    if _is_payment_deadline_event(event.summary):
+        # summary から時刻を抽出: "支払い期限 23:59@..."
+        match = re.search(r"支払い期限 (\d{2}:\d{2})", event.summary)
+        time_str = match.group(1) if match else "23:59"
+        return ("期限", f"{event.start.date} {time_str}")
+
+    # 通常の終日イベント
+    if event.start.date == event.end.date:
+        return ("日時", f"{event.start.date} (終日)")
+
+    # 複数日にわたる終日イベント
+    try:
+        start_date = date.fromisoformat(event.start.date)
+        end_date = date.fromisoformat(event.end.date)
+        # Google Calendarの仕様: 終日イベントのendは翌日
+        actual_end = end_date - timedelta(days=1)
+        if start_date == actual_end:
+            return ("日時", f"{event.start.date} (終日)")
+        return ("日時", f"{event.start.date}〜{actual_end.isoformat()} (終日)")
+    except (ValueError, AttributeError):
+        return ("日時", f"{event.start.date}〜{event.end.date} (終日)")
 
 
 def _format_datetime_range(start_raw: str, end_raw: str) -> str:

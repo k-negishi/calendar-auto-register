@@ -430,3 +430,80 @@ def test_Google_Calendar形式を検証() -> None:
         assert "dateTime" in event["end"]
         assert "timeZone" in event["end"]
         assert event["start"]["timeZone"] == "Asia/Tokyo"
+
+
+def test_支払い期限イベントを終日予定として抽出できる() -> None:
+    """支払い期限イベントを date 形式（終日予定）として抽出できることを検証する。"""
+
+    response_dict = {
+        "events": [
+            {
+                "summary": "コンサート@サンプルアリーナ東京",
+                "start": {
+                    "dateTime": "2026-04-03T19:00:00+09:00",
+                    "timeZone": "Asia/Tokyo",
+                },
+                "end": {
+                    "dateTime": "2026-04-03T22:00:00+09:00",
+                    "timeZone": "Asia/Tokyo",
+                },
+                "location": "サンプルアリーナ東京",
+                "description": "コンサートイベント"
+            },
+            {
+                "summary": "支払い期限 23:59@コンサート@サンプルアリーナ東京",
+                "start": {
+                    "date": "2025-12-30"
+                },
+                "end": {
+                    "date": "2025-12-31"
+                },
+                "description": "支払い期限: 2025年12月30日 23:59\n支払い方法: コンビニ支払い\n払込票番号: 1234-5678-9012\n合計金額: ¥5,000"
+            }
+        ]
+    }
+
+    with patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        mock_chat_instance = _mock_bedrock_chain(response_dict)
+        mock_chat_class.return_value = mock_chat_instance
+        mock_boto_client.return_value = MagicMock()
+
+        client = TestClient(create_app())
+        payload = {
+            "normalized_mail": {
+                "from_addr": "ticket@example.com",
+                "reply_to": None,
+                "subject": "チケット当選のお知らせ",
+                "received_at": "2025-12-27T09:00:00Z",
+                "text": "コンサートに当選しました。支払い期限は12月30日23:59までです。",
+                "html": None,
+                "attachments": [],
+            }
+        }
+
+        res = client.post("/llm/extract-event", json=payload)
+
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["events"]) == 2
+
+        # 主イベント（dateTime形式）の検証
+        main_event = data["events"][0]
+        assert main_event["summary"] == "コンサート@サンプルアリーナ東京"
+        assert "dateTime" in main_event["start"]
+        assert "timeZone" in main_event["start"]
+        assert "dateTime" in main_event["end"]
+        assert "timeZone" in main_event["end"]
+
+        # 支払い期限イベント（date形式）の検証
+        payment_event = data["events"][1]
+        assert payment_event["summary"] == "支払い期限 23:59@コンサート@サンプルアリーナ東京"
+        assert "date" in payment_event["start"]
+        assert "date" in payment_event["end"]
+        assert payment_event["start"]["date"] == "2025-12-30"
+        assert payment_event["end"]["date"] == "2025-12-31"
+        assert payment_event.get("location") is None
