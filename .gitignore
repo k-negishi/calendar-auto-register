@@ -9,3 +9,5 @@
 /.codex/AGENTS.md
 /.claude/CLAUDE.me
 /DEPLOYMENT_PROD.md
+__pycache__/
+*.pyc

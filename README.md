@@ -257,17 +257,3 @@ aws ssm put-parameter \
 ```
 
 ---
-
-### Hello World 実行
-
-Docker 内で Python が動作するか確認するため、`app/src/hello.py` に最小のスクリプトを用意している。
-
-```bash
-docker compose run --rm local python app/src/hello.py
-```
-
-期待出力（例）:
-
-```
-Hello from calendar-auto-register via Docker!
-```
