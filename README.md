@@ -13,7 +13,7 @@
 - **メール解析**: S3 に保存されたメールファイルを取得・解析
 - **LLM による情報抽出**: Bedrock 経由で LLM を呼び出し、メール本文からイベント情報を抽出
 - **Google カレンダー登録**: 抽出したイベント情報を一括で Google カレンダーに登録
-- **LINE 通知**: 登録結果（成功/失敗の件数と詳細）を LINE に通知
+- **LINE 通知**: 登録結果（成功/失敗の件数と詳細）を LINE Messaging API SDK で通知
 
 ## アーキテクチャ
 
@@ -31,7 +31,7 @@
 - LangChain（LLM インターフェース）
 - Amazon Bedrock（LLM プロバイダー）
 - Google Calendar API（カレンダー登録）
-- LINE Message API（登録通知）
+- LINE Messaging API SDK（登録通知）
 
 
 ### アーキテクチャ図
