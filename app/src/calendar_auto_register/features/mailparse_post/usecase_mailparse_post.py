@@ -87,7 +87,8 @@ def _build_normalized_mail(message: EmailMessage) -> NormalizedMail:
 
 
 def _is_sender_allowed(from_addr: str | None, allowlist: list[str]) -> bool:
-    if not allowlist:
+    allowset = {entry.strip().lower() for entry in allowlist if entry.strip()}
+    if not allowset:
         return True
     if not from_addr:
         return False
@@ -95,5 +96,4 @@ def _is_sender_allowed(from_addr: str | None, allowlist: list[str]) -> bool:
     normalized = addr.strip().lower()
     if not normalized:
         return False
-    allowset = {entry.strip().lower() for entry in allowlist if entry.strip()}
     return normalized in allowset
