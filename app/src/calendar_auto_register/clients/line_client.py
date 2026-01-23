@@ -3,16 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from linebot.v3.messaging import (
-    ApiClient,
-    ApiException,
-    Configuration,
-    MessagingApi,
-    PushMessageRequest,
-    TextMessage,
-)
+if TYPE_CHECKING:
+    from linebot.v3.messaging import ApiException
 
 
 class LineApiError(RuntimeError):
@@ -31,6 +25,15 @@ def push_message(
     timeout: float | None = None,
 ) -> None:
     """LINE Push API でメッセージを送信する。"""
+
+    from linebot.v3.messaging import (
+        ApiClient,
+        ApiException,
+        Configuration,
+        MessagingApi,
+        PushMessageRequest,
+        TextMessage,
+    )
 
     configuration = Configuration(access_token=channel_access_token)
     if timeout is not None:
