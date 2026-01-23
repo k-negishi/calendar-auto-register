@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Sequence
-
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import Resource, build
+from typing import TYPE_CHECKING, Sequence
 
 from calendar_auto_register.core.settings import Settings
+
+if TYPE_CHECKING:
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import Resource
 
 GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
 
@@ -20,6 +21,8 @@ def build_credentials_from_service_account(
     scopes: Sequence[str] | None = None,
 ) -> Credentials:
     """Service Account を利用して Google API 認証情報を構築する。"""
+
+    from google.oauth2.service_account import Credentials
 
     scopes = list(scopes or [GOOGLE_CALENDAR_SCOPE])
     raw_credentials = raw_credentials.strip()
@@ -37,6 +40,8 @@ def build_credentials_from_service_account(
 
 def build_calendar_service(*, credentials: Credentials) -> Resource:
     """google-api-python-client の Calendar Service を生成する。"""
+
+    from googleapiclient.discovery import build
 
     return build("calendar", "v3", credentials=credentials, cache_discovery=False)
 

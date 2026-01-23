@@ -7,12 +7,11 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
-import boto3
-from botocore.exceptions import ClientError
-
 _DEFAULT_REGION = "ap-northeast-1"
 _DEFAULT_TZ = "Asia/Tokyo"
 _LOCAL_ENV = "local"
+
+
 @dataclass(slots=True)
 class Settings:
     """環境非依存で参照できる設定値の集合。"""
@@ -56,6 +55,9 @@ def _get_required_env(name: str) -> str:
 def _load_dotenv_from_ssm(*, region: str) -> None:
     """SSM に保存した dotenv 文字列を読み込み `os.environ` に適用する。"""
 
+    import boto3
+    from botocore.exceptions import ClientError
+
     parameter_path = os.getenv("SSM_DOTENV_PARAMETER")
     if not parameter_path:
         raise RuntimeError(
@@ -66,9 +68,7 @@ def _load_dotenv_from_ssm(*, region: str) -> None:
     try:
         response = client.get_parameter(Name=parameter_path, WithDecryption=True)
     except ClientError as exc:  # pragma: no cover - boto3 例外ラップ
-        raise RuntimeError(
-            f"Failed to load dotenv parameter from SSM: {parameter_path}"
-        ) from exc
+        raise RuntimeError(f"Failed to load dotenv parameter from SSM: {parameter_path}") from exc
 
     blob = response["Parameter"]["Value"]
     for raw_line in blob.splitlines():
