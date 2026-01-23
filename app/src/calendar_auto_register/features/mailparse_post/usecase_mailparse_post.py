@@ -26,6 +26,8 @@ def parse_mail(
 
     raw_eml = _load_eml_from_s3(request.s3_key, settings=settings)
     message = email.message_from_bytes(raw_eml, policy=email.policy.default)
+    if not _is_sender_allowed(message.get("From"), settings.allowlist_senders):
+        raise ValueError("許可されていない送信元のため処理を中断しました。")
     normalized = _build_normalized_mail(message)
     return asdict(normalized)
 
@@ -82,3 +84,16 @@ def _build_normalized_mail(message: EmailMessage) -> NormalizedMail:
         html=html_body,
         attachments=attachments,
     )
+
+
+def _is_sender_allowed(from_addr: str | None, allowlist: list[str]) -> bool:
+    if not allowlist:
+        return True
+    if not from_addr:
+        return False
+    _, addr = email.utils.parseaddr(from_addr)
+    normalized = addr.strip().lower()
+    if not normalized:
+        return False
+    allowset = {entry.strip().lower() for entry in allowlist if entry.strip()}
+    return normalized in allowset
