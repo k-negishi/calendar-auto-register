@@ -182,19 +182,34 @@
 - [ ] 認証なし設定（署名検証はアプリケーション層）
 - [ ] タイムアウト設定確認（29秒）
 
-### 8.4 Step Functions設定（オプション）
+### 8.4 Step Functions設定
 
-> **注**: 現在のメール処理フローはStep Functionsを使用しているが、LINE Webhook処理は同期的に完結するため、Step Functions統合は必須ではない。将来的な非同期処理への拡張を見据える場合のみ実装。
+> **重要**: 既存のメール処理フローと同様に、LINE Webhook処理もStep Functionsでオーケストレーションする。Webhook受信後、即座に200 OKを返却し、非同期でStep Functionsを起動する。
 
-- [ ] Step Functions State Machine定義の確認
-  - [ ] 既存のメール処理ワークフローを確認
-  - [ ] LINE Webhook用の新規State Machineが必要か判断
-- [ ] EventBridge Rule設定（必要な場合）
-  - [ ] LINE Webhook → Step Functions トリガー設定
-  - [ ] イベントパターン定義
-- [ ] Step Functions IAMロール設定（必要な場合）
-  - [ ] Lambda呼び出し権限
+- [ ] LINE Webhook用のState Machine定義作成
+  - [ ] `infra/sam/statemachine/line_webhook_workflow.asl.json` 作成
+  - [ ] 既存のメール処理ワークフロー（`POST /mail/parse` → `POST /llm/extract-event` → `POST /calendar/events` → `POST /line/notify`）を参考に設計
+  - [ ] LINE Webhookフロー定義:
+    - **テキスト**: `POST /line/webhook` → `POST /llm/extract-event` → `POST /calendar/events` → `POST /line/notify`
+    - **画像**: `POST /line/webhook` → LINE Content API → Vision LLM → `POST /calendar/events` → `POST /line/notify`
+  - [ ] エラーハンドリング（Retry, Catch）設定
+  - [ ] タイムアウト設定（各ステップ120秒、全体300秒）
+- [ ] SAM template.yamlにState Machine定義追加
+  - [ ] `AWS::Serverless::StateMachine` リソース作成
+  - [ ] State Machine名: `LineWebhookWorkflow`
+  - [ ] DefinitionUri指定
+  - [ ] IAMロール設定（Lambda呼び出し権限）
+- [ ] Lambda関数からState Machine起動ロジック実装
+  - [ ] `/line/webhook` エンドポイントで即座に200 OK返却
+  - [ ] `boto3` で `stepfunctions.start_execution()` 呼び出し
+  - [ ] 実行名: `line-webhook-{timestamp}-{random}`
+  - [ ] 入力データ: `{"events": [...], "source": "line_webhook"}`
+- [ ] Step Functions IAMロール設定
+  - [ ] Lambda呼び出し権限（`lambda:InvokeFunction`）
   - [ ] CloudWatch Logs書き込み権限
+  - [ ] X-Rayトレーシング権限（オプション）
+- [ ] CloudWatch Logsロググループ作成
+  - [ ] `/aws/vendedlogs/states/LineWebhookWorkflow`
 
 ---
 

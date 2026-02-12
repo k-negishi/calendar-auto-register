@@ -11,7 +11,13 @@
 
 ### 1.2 処理パイプライン
 
-#### テキストメッセージフロー（3ステップ）
+#### アーキテクチャパターン：非同期オーケストレーション
+
+既存のメール処理フローと同様に、**Step Functions**を使用してオーケストレーション。
+
+**重要**: LINE Webhookは5秒以内に応答が必要なため、Webhook受信後、即座に200 OKを返却し、Step Functionsを非同期起動する。
+
+#### テキストメッセージフロー（Step Functions）
 
 ```
 ┌─────────────────┐
@@ -20,31 +26,47 @@
      │ Webhook POST
      ▼
 ┌─────────────────────────────────┐
-│ Lambda: POST /line/webhook       │
-│ - 署名検証                       │
-│ - イベント判定                   │
+│ API Gateway                      │
+│ POST /line/webhook               │
 └────┬────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────┐
-│ Vision LLM (Bedrock Haiku)       │
+│ Lambda: Webhook受信              │
+│ - 署名検証                       │
+│ - Step Functions起動             │
+│ - 即座に 200 OK 返却             │
+└────┬────────────────────────────┘
+     │
+     ▼ (非同期)
+┌─────────────────────────────────┐
+│ Step Functions                   │
+│ LineWebhookWorkflow              │
+└────┬────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────┐
+│ [Task 1]                         │
+│ Lambda: Vision LLM呼び出し        │
 │ - テキストからイベント抽出        │
 └────┬────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────┐
-│ POST /calendar/events (既存)     │
+│ [Task 2]                         │
+│ Lambda: POST /calendar/events    │
 │ - Google Calendar登録             │
 └────┬────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────┐
-│ POST /line/notify (既存)         │
+│ [Task 3]                         │
+│ Lambda: POST /line/notify        │
 │ - LINE通知送信                    │
 └─────────────────────────────────┘
 ```
 
-#### 画像メッセージフロー（4ステップ）
+#### 画像メッセージフロー（Step Functions）
 
 ```
 ┌─────────────────┐
@@ -53,31 +75,49 @@
      │ Webhook POST
      ▼
 ┌─────────────────────────────────┐
-│ Lambda: POST /line/webhook       │
-│ - 署名検証                       │
-│ - 画像メッセージ判定              │
+│ API Gateway                      │
+│ POST /line/webhook               │
 └────┬────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────┐
-│ LINE Content API                 │
+│ Lambda: Webhook受信              │
+│ - 署名検証                       │
+│ - 画像メッセージ判定              │
+│ - Step Functions起動             │
+│ - 即座に 200 OK 返却             │
+└────┬────────────────────────────┘
+     │
+     ▼ (非同期)
+┌─────────────────────────────────┐
+│ Step Functions                   │
+│ LineWebhookWorkflow              │
+└────┬────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────┐
+│ [Task 1]                         │
+│ Lambda: LINE Content API         │
 │ - 画像バイナリダウンロード        │
 └────┬────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────┐
-│ Vision LLM (Bedrock Haiku)       │
+│ [Task 2]                         │
+│ Lambda: Vision LLM呼び出し        │
 │ - 画像から直接イベント抽出        │
 └────┬────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────┐
-│ POST /calendar/events (既存)     │
+│ [Task 3]                         │
+│ Lambda: POST /calendar/events    │
 └────┬────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────┐
-│ POST /line/notify (既存)         │
+│ [Task 4]                         │
+│ Lambda: POST /line/notify        │
 └─────────────────────────────────┘
 ```
 
@@ -195,91 +235,66 @@ def verify_line_signature(body: bytes, signature: str, channel_secret: str) -> b
 
 ---
 
-### 3.3 Webhookイベント処理
+### 3.3 Webhookイベント処理（Step Functions起動）
 
 #### usecase_line_webhook_post.py
 
+**重要**: Webhook受信後、Step Functionsを非同期起動し、即座に200 OKを返却する。
+
 ```python
+import boto3
+import json
+import time
+import random
 from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
     LineMessageEvent
 )
-from calendar_auto_register.clients.line_content_client import LineContentClient
-from calendar_auto_register.clients.bedrock_vision_client import BedrockVisionClient
-from calendar_auto_register.features.llm_extract.usecase_llm_extract_post import (
-    LlmExtractUsecase
-)
-from calendar_auto_register.features.calendar_events.usecase_calendar_events_post import (
-    CalendarEventsUsecase
-)
-from calendar_auto_register.features.line_notify.usecase_line_notify_post import (
-    LineNotifyUsecase
-)
+from calendar_auto_register.config.settings import settings
 
 class LineWebhookUsecase:
-    def __init__(
-        self,
-        line_content_client: LineContentClient,
-        bedrock_vision_client: BedrockVisionClient,
-        llm_extract_usecase: LlmExtractUsecase,
-        calendar_events_usecase: CalendarEventsUsecase,
-        line_notify_usecase: LineNotifyUsecase
-    ):
-        self.line_content_client = line_content_client
-        self.bedrock_vision_client = bedrock_vision_client
-        self.llm_extract_usecase = llm_extract_usecase
-        self.calendar_events_usecase = calendar_events_usecase
-        self.line_notify_usecase = line_notify_usecase
+    """
+    LINE Webhook受信後、Step Functionsを非同期起動するユースケース
+    """
+    def __init__(self):
+        self.sfn_client = boto3.client('stepfunctions', region_name=settings.AWS_REGION)
+        self.state_machine_arn = settings.LINE_WEBHOOK_STATE_MACHINE_ARN
 
     async def handle_webhook_events(self, events: list[LineMessageEvent]):
-        """Webhookイベントを順次処理"""
+        """
+        Webhookイベントを受け取り、Step Functionsを起動
+
+        Args:
+            events: LINE Webhookイベントリスト
+        """
         for event in events:
             if event.type != "message":
                 continue  # メッセージイベント以外はスキップ
 
+            # Step Functions起動用のペイロード作成
+            execution_input = {
+                "event": event.dict(),
+                "source": "line_webhook",
+                "timestamp": int(time.time())
+            }
+
+            # 実行名生成（ユニーク性確保）
+            execution_name = f"line-webhook-{int(time.time())}-{random.randint(1000, 9999)}"
+
             try:
-                if event.message.type == "text":
-                    await self._handle_text_message(event)
-                elif event.message.type == "image":
-                    await self._handle_image_message(event)
-                else:
-                    # 未対応メッセージタイプ
-                    pass
+                # Step Functions非同期起動
+                response = self.sfn_client.start_execution(
+                    stateMachineArn=self.state_machine_arn,
+                    name=execution_name,
+                    input=json.dumps(execution_input)
+                )
+
+                # ログ出力
+                print(f"Step Functions started: {response['executionArn']}")
+
             except Exception as e:
-                # エラーをLINEで通知
-                await self._notify_error(event, str(e))
-
-    async def _handle_text_message(self, event: LineMessageEvent):
-        """テキストメッセージ処理"""
-        text = event.message.text
-
-        # Vision LLMでイベント抽出
-        events = await self.bedrock_vision_client.extract_events_from_text(text)
-
-        # カレンダー登録
-        results = await self.calendar_events_usecase.create_events(events)
-
-        # LINE通知
-        await self.line_notify_usecase.notify_results(results)
-
-    async def _handle_image_message(self, event: LineMessageEvent):
-        """画像メッセージ処理"""
-        message_id = event.message.id
-
-        # LINE Content APIで画像取得
-        image_bytes = await self.line_content_client.get_message_content(message_id)
-
-        # Vision LLMで直接イベント抽出
-        events = await self.bedrock_vision_client.extract_events_from_image(image_bytes)
-
-        # カレンダー登録
-        results = await self.calendar_events_usecase.create_events(events)
-
-        # LINE通知
-        await self.line_notify_usecase.notify_results(results)
-
-    async def _notify_error(self, event: LineMessageEvent, error_message: str):
-        """エラー通知"""
-        await self.line_notify_usecase.send_error_notification(error_message)
+                # 起動失敗時はログに記録（ユーザー通知は不可）
+                print(f"Failed to start Step Functions: {str(e)}")
+                # CloudWatch Alarmでモニタリング
 ```
 
 ---
@@ -501,6 +516,193 @@ class LineWebhookResponse(BaseModel):
 
 ---
 
+### 3.7 Step Functions State Machine定義
+
+#### infra/sam/statemachine/line_webhook_workflow.asl.json
+
+Amazon States Language（ASL）でState Machineを定義。
+
+```json
+{
+  "Comment": "LINE Webhook処理ワークフロー",
+  "StartAt": "DetermineMessageType",
+  "States": {
+    "DetermineMessageType": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.event.message.type",
+          "StringEquals": "text",
+          "Next": "ExtractEventsFromText"
+        },
+        {
+          "Variable": "$.event.message.type",
+          "StringEquals": "image",
+          "Next": "DownloadImage"
+        }
+      ],
+      "Default": "UnsupportedMessageType"
+    },
+    "ExtractEventsFromText": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${LambdaFunctionArn}",
+        "Payload": {
+          "body": {
+            "text": "$.event.message.text"
+          },
+          "path": "/llm/extract-event",
+          "httpMethod": "POST"
+        }
+      },
+      "ResultPath": "$.extractedEvents",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyError"
+        }
+      ],
+      "Next": "CreateCalendarEvents"
+    },
+    "DownloadImage": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${LambdaFunctionArn}",
+        "Payload": {
+          "body": {
+            "message_id": "$.event.message.id"
+          },
+          "path": "/line/download-image",
+          "httpMethod": "POST"
+        }
+      },
+      "ResultPath": "$.imageData",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyError"
+        }
+      ],
+      "Next": "ExtractEventsFromImage"
+    },
+    "ExtractEventsFromImage": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${LambdaFunctionArn}",
+        "Payload": {
+          "body": {
+            "image_bytes": "$.imageData.Payload.body.image_bytes"
+          },
+          "path": "/vision/extract-events",
+          "httpMethod": "POST"
+        }
+      },
+      "ResultPath": "$.extractedEvents",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyError"
+        }
+      ],
+      "Next": "CreateCalendarEvents"
+    },
+    "CreateCalendarEvents": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${LambdaFunctionArn}",
+        "Payload": {
+          "body": {
+            "events": "$.extractedEvents.Payload.body.events"
+          },
+          "path": "/calendar/events",
+          "httpMethod": "POST"
+        }
+      },
+      "ResultPath": "$.calendarResults",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyError"
+        }
+      ],
+      "Next": "NotifySuccess"
+    },
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${LambdaFunctionArn}",
+        "Payload": {
+          "body": {
+            "results": "$.calendarResults.Payload.body.results"
+          },
+          "path": "/line/notify",
+          "httpMethod": "POST"
+        }
+      },
+      "End": true
+    },
+    "NotifyError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${LambdaFunctionArn}",
+        "Payload": {
+          "body": {
+            "error_message": "$.Error"
+          },
+          "path": "/line/notify-error",
+          "httpMethod": "POST"
+        }
+      },
+      "End": true
+    },
+    "UnsupportedMessageType": {
+      "Type": "Succeed",
+      "Comment": "未対応のメッセージタイプ（スキップ）"
+    }
+  }
+}
+```
+
+---
+
 ## 4. エラーハンドリング戦略
 
 ### 4.1 段階的エラー対応
@@ -582,15 +784,89 @@ Policies:
           - bedrock:InvokeModel
         Resource:
           - arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-*
+  - Statement:
+      - Effect: Allow
+        Action:
+          - states:StartExecution
+        Resource:
+          - !GetAtt LineWebhookStateMachine.Arn
 ```
 
-### 6.3 環境変数
+### 6.3 Step Functions設定
+
+#### SAM template.yaml
+
+```yaml
+LineWebhookStateMachine:
+  Type: AWS::Serverless::StateMachine
+  Properties:
+    Name: LineWebhookWorkflow
+    DefinitionUri: statemachine/line_webhook_workflow.asl.json
+    DefinitionSubstitutions:
+      LambdaFunctionArn: !GetAtt CalendarAutoRegisterFunction.Arn
+    Role: !GetAtt StepFunctionsRole.Arn
+    Logging:
+      Level: ALL
+      IncludeExecutionData: true
+      Destinations:
+        - CloudWatchLogsLogGroup:
+            LogGroupArn: !GetAtt LineWebhookWorkflowLogGroup.Arn
+    Tracing:
+      Enabled: true
+
+StepFunctionsRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument:
+      Version: "2012-10-17"
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: states.amazonaws.com
+          Action: sts:AssumeRole
+    Policies:
+      - PolicyName: StepFunctionsExecutionPolicy
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt CalendarAutoRegisterFunction.Arn
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+              Resource: "*"
+
+LineWebhookWorkflowLogGroup:
+  Type: AWS::Logs::LogGroup
+  Properties:
+    LogGroupName: /aws/vendedlogs/states/LineWebhookWorkflow
+    RetentionInDays: 7
+```
+
+### 6.4 環境変数
 
 | 変数名 | 説明 |
 |---|---|
 | `LINE_CHANNEL_SECRET` | Webhook署名検証用 |
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE Content API用 |
 | `BEDROCK_VISION_MODEL_ID` | `anthropic.claude-3-haiku-20240307-v1:0` |
+| `LINE_WEBHOOK_STATE_MACHINE_ARN` | Step Functions State Machine ARN（SAMで自動設定） |
+| `AWS_REGION` | AWSリージョン（例: `ap-northeast-1`） |
 
 ---
 
@@ -610,12 +886,18 @@ Policies:
 
 **月間想定**（個人利用）:
 - Lambda実行: 200回/月 × 20秒 = 4,000秒
+- **Step Functions**: 200実行/月 × 4ステップ = 800ステートトランジション
 - Bedrock Vision (Haiku): 100回/月
 - Bedrock LLM (Haiku): 100回/月
 - Google Calendar API: 200回/月（無料枠）
 - LINE Messaging API: 200通/月（無料枠）
 
-**推定コスト**: $2-5/月
+**推定コスト**:
+- Lambda: ~$0.50
+- Step Functions: ~$0.02（最初の4,000ステートトランジションは無料枠）
+- Bedrock Vision (Haiku): ~$0.40
+- Bedrock LLM (Haiku): ~$0.25
+- **合計: $1-2/月**
 
 ---
 
