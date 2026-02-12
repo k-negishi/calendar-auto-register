@@ -182,6 +182,20 @@
 - [ ] 認証なし設定（署名検証はアプリケーション層）
 - [ ] タイムアウト設定確認（29秒）
 
+### 8.4 Step Functions設定（オプション）
+
+> **注**: 現在のメール処理フローはStep Functionsを使用しているが、LINE Webhook処理は同期的に完結するため、Step Functions統合は必須ではない。将来的な非同期処理への拡張を見据える場合のみ実装。
+
+- [ ] Step Functions State Machine定義の確認
+  - [ ] 既存のメール処理ワークフローを確認
+  - [ ] LINE Webhook用の新規State Machineが必要か判断
+- [ ] EventBridge Rule設定（必要な場合）
+  - [ ] LINE Webhook → Step Functions トリガー設定
+  - [ ] イベントパターン定義
+- [ ] Step Functions IAMロール設定（必要な場合）
+  - [ ] Lambda呼び出し権限
+  - [ ] CloudWatch Logs書き込み権限
+
 ---
 
 ## Phase 9: 品質チェック
@@ -209,15 +223,46 @@
 
 ### 10.1 README更新
 
-- [ ] `README.md` に新機能セクション追加
-  - [ ] LINE Webhook対応の説明
-  - [ ] 環境変数の追加説明
-  - [ ] curlリクエスト例の追加
+- [ ] `README.md` の「機能」セクション更新
+  - [ ] LINE Webhook対応を追加（テキスト・画像メッセージ）
+  - [ ] Vision LLMアプローチの説明
+  - [ ] メールベースフローとの違いを明記
+- [ ] `README.md` の「アーキテクチャ図」更新
+  - [ ] `docs/architecture.png` に LINE Webhook フローを追加（または別図作成）
+  - [ ] テキストベースのフロー図を追加
+- [ ] `README.md` の「環境変数」セクション更新
+  - [ ] `LINE_CHANNEL_SECRET` の説明追加
+  - [ ] `BEDROCK_VISION_MODEL_ID` の説明追加
+  - [ ] 既存環境変数との関係性を明記
+- [ ] `README.md` の「ローカル動作確認」セクション更新
+  - [ ] `/line/webhook` エンドポイントへのcurlリクエスト例追加
+  - [ ] テキストメッセージのリクエスト例
+  - [ ] 画像メッセージのリクエスト例（モックデータ）
+- [ ] `README.md` の「デプロイメント」セクション更新
+  - [ ] LINE Developers Consoleでの設定手順追加
+  - [ ] Webhook URL設定方法
+  - [ ] 署名検証の注意事項
+- [ ] `README.md` に「トラブルシューティング」セクション追加
+  - [ ] 署名検証失敗時の対処法
+  - [ ] Vision LLM抽出失敗時の対処法
+  - [ ] タイムアウト時の対処法
 
 ### 10.2 APIドキュメント
 
 - [ ] FastAPI自動生成ドキュメント（`/docs`）確認
-- [ ] `/line/webhook` のリクエスト/レスポンス例確認
+  - [ ] `/line/webhook` のリクエスト/レスポンス例確認
+  - [ ] スキーマ定義の正確性確認
+- [ ] `docs/requirements.md` の更新確認
+  - [ ] 実装内容との整合性チェック
+
+### 10.3 開発者向けドキュメント
+
+- [ ] コード内コメント・docstring確認
+  - [ ] 各クラス・メソッドのdocstring追加
+  - [ ] 複雑なロジックへのインラインコメント
+- [ ] `CHANGELOG.md` 更新（存在する場合）
+  - [ ] LINE Webhook機能追加を記録
+  - [ ] Vision LLMアプローチ採用を記録
 
 ---
 
