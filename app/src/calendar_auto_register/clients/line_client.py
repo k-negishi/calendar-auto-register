@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
-
-from calendar_auto_register.clients.http_client import create_sync_client
-
-LINE_PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push"
+from linebot.v3.messaging import (
+    ApiClient,
+    ApiException,
+    Configuration,
+    MessagingApi,
+    PushMessageRequest,
+    TextMessage,
+)
 
 
 class LineApiError(RuntimeError):
@@ -25,34 +28,32 @@ def push_message(
     channel_access_token: str,
     user_id: str,
     message: str,
-    timeout: httpx.Timeout | None = None,
+    timeout: float | None = None,
 ) -> None:
     """LINE Push API でメッセージを送信する。"""
 
-    payload = {
-        "to": user_id,
-        "messages": [{"type": "text", "text": message}],
-    }
+    configuration = Configuration(access_token=channel_access_token)
+    if timeout is not None:
+        configuration.timeout = timeout
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {channel_access_token}",
-    }
+    request = PushMessageRequest(
+        to=user_id,
+        messages=[TextMessage(text=message)],
+    )
 
-    with create_sync_client(timeout=timeout) as client:
-        response = client.post(LINE_PUSH_ENDPOINT, json=payload, headers=headers)
-
-    if response.status_code == 200:
-        return
-
-    raise LineApiError(_build_error_message(response), response.status_code)
-
-
-def _build_error_message(response: httpx.Response) -> str:
     try:
-        body: dict[str, Any] = response.json()
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(request)
+    except ApiException as exc:
+        status_code = exc.status or 0
+        raise LineApiError(_build_error_message(exc), status_code) from exc
+
+
+def _build_error_message(exc: ApiException) -> str:
+    try:
+        body: dict[str, Any] = json.loads(exc.body or "{}")
     except json.JSONDecodeError:
-        return f"LINE API呼び出しが失敗しました (Status: {response.status_code})"
+        return f"LINE API呼び出しが失敗しました (Status: {exc.status})"
 
     message = str(body.get("message") or "")
     details = body.get("details") or []
@@ -62,6 +63,6 @@ def _build_error_message(response: httpx.Response) -> str:
             message = f"{message} (詳細: {detail})"
 
     if message:
-        return f"LINE API呼び出しが失敗しました (Status: {response.status_code}): {message}"
+        return f"LINE API呼び出しが失敗しました (Status: {exc.status}): {message}"
 
-    return f"LINE API呼び出しが失敗しました (Status: {response.status_code})"
+    return f"LINE API呼び出しが失敗しました (Status: {exc.status})"
