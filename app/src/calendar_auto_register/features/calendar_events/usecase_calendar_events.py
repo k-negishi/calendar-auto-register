@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from importlib.util import find_spec
 from typing import Any, Iterable
-
-from googleapiclient.errors import HttpError
 
 from calendar_auto_register.clients import google_client
 from calendar_auto_register.core.settings import Settings
@@ -95,21 +94,22 @@ def create_calendar_events(
                     ),
                 )
             )
-        except HttpError as exc:
-            status = exc.resp.status if exc.resp else 500
-            retryable = status >= 500 or status in {429, 408}
-            results.append(
-                CalendarEventResult(
-                    status="FAILED",
-                    event=_event_with_default_tz(event, settings),
-                    error=ErrorModel(
-                        code="GOOGLE_API_ERROR",
-                        message=_format_http_error(exc),
-                        retryable=retryable,
-                    ),
-                )
-            )
         except Exception as exc:  # pragma: no cover - defensive
+            http_error = _extract_http_error(exc)
+            if http_error:
+                status, retryable, message = http_error
+                results.append(
+                    CalendarEventResult(
+                        status="FAILED",
+                        event=_event_with_default_tz(event, settings),
+                        error=ErrorModel(
+                            code="GOOGLE_API_ERROR",
+                            message=message,
+                            retryable=retryable,
+                        ),
+                    )
+                )
+                continue
             results.append(
                 CalendarEventResult(
                     status="FAILED",
@@ -262,9 +262,8 @@ def _is_duplicate(
     if candidate_start_dt is None or candidate_end_dt is None:
         return False
 
-    if (
-        isinstance(normalized_event.start, DateTimeModel)
-        and isinstance(normalized_event.end, DateTimeModel)
+    if isinstance(normalized_event.start, DateTimeModel) and isinstance(
+        normalized_event.end, DateTimeModel
     ):
         tz = normalized_event.start.timeZone or normalized_event.end.timeZone
         if candidate_tz and tz and candidate_tz != tz:
@@ -356,7 +355,20 @@ def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
 
 
-def _format_http_error(exc: HttpError) -> str:
-    if exc.resp is None:
+def _extract_http_error(exc: Exception) -> tuple[int, bool, str] | None:
+    if not find_spec("googleapiclient.errors"):
+        return None
+    from googleapiclient.errors import HttpError
+
+    if not isinstance(exc, HttpError):
+        return None
+    status = exc.resp.status if exc.resp else 500
+    retryable = status >= 500 or status in {429, 408}
+    return status, retryable, _format_http_error(exc)
+
+
+def _format_http_error(exc: Exception) -> str:
+    resp = getattr(exc, "resp", None)
+    if resp is None:
         return str(exc)
-    return f"HTTP {exc.resp.status}: {exc}"
+    return f"HTTP {resp.status}: {exc}"
