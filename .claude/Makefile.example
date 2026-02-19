@@ -1,0 +1,38 @@
+# Claude Python Toolkit - Subtree Management
+# このファイルをコピーして Makefile として使用してください
+#
+# 使い方:
+#   1. このファイルを Makefile にコピー
+#   2. YOUR_USERNAME を実際の GitHub ユーザー名に置換
+#   3. make claude-init を実行
+
+REPO_URL = https://github.com/YOUR_USERNAME/claude-python-toolkit.git
+SUBTREE_PREFIX = .claude
+BRANCH = main
+
+.PHONY: claude-init claude-update claude-push claude-status
+
+# Subtree を初回追加
+claude-init:
+	@echo "Adding claude-python-toolkit as subtree..."
+	git subtree add --prefix=$(SUBTREE_PREFIX) $(REPO_URL) $(BRANCH) --squash
+
+# 共通リポジトリから更新を取得
+claude-update:
+	@echo "Pulling updates from claude-python-toolkit..."
+	git subtree pull --prefix=$(SUBTREE_PREFIX) $(REPO_URL) $(BRANCH) --squash
+
+# ローカルの変更を共通リポジトリにプッシュ
+claude-push:
+	@echo "Pushing changes to claude-python-toolkit..."
+	git subtree push --prefix=$(SUBTREE_PREFIX) $(REPO_URL) $(BRANCH)
+
+# Subtree の状態を確認
+claude-status:
+	@echo "Subtree status:"
+	@echo "  Prefix: $(SUBTREE_PREFIX)"
+	@echo "  Remote: $(REPO_URL)"
+	@echo "  Branch: $(BRANCH)"
+	@echo ""
+	@echo "Recent subtree commits:"
+	@git log --grep="git-subtree-dir: $(SUBTREE_PREFIX)" --oneline -5 || echo "  No subtree commits found yet"
