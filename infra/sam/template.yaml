@@ -34,7 +34,7 @@ Resources:
       Description: FastAPI Lambdalith for calendar auto register.
       PackageType: Image
       Architectures:
-        - arm64
+        - x86_64
       Environment:
         Variables:
           APP_ENV: prod
