@@ -5,6 +5,8 @@ template_file = "infra/sam/template.yaml"
 use_container = true
 
 [default.deploy.parameters]
+stack_name = "calendar-auto-register"
+region = "ap-northeast-1"
 template_file = ".aws-sam/build/template.yaml"
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 resolve_s3 = true

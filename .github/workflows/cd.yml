@@ -1,0 +1,54 @@
+name: CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Install AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: SAM build
+        run: sam build --config-file infra/sam/samconfig.toml
+
+      - name: SAM deploy
+        env:
+          ECR_IMAGE_REPOSITORY: ${{ secrets.ECR_IMAGE_REPOSITORY }}
+          PROJECT_NAME: calendar-auto-register
+          SSM_DOTENV_PARAMETER: /calendar-auto-register/dotenv
+          S3_RAW_MAIL_BUCKET: calendar-auto-register
+        run: |
+          sam deploy \
+            --config-file infra/sam/samconfig.toml \
+            --image-repositories CalendarFunction=$ECR_IMAGE_REPOSITORY \
+            --parameter-overrides \
+              ProjectName=$PROJECT_NAME \
+              ImageTag=$GITHUB_SHA \
+              SsmDotenvParameter=$SSM_DOTENV_PARAMETER \
+              S3RawMailBucketName=$S3_RAW_MAIL_BUCKET \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset
