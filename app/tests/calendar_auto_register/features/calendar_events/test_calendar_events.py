@@ -29,6 +29,89 @@ def _build_service_mock(
     return service
 
 
+def test_終日イベント_start_eq_end_で翌日に自動補正() -> None:
+    """LLMが start == end の終日イベントを返した場合、end を翌日に自動補正する。"""
+    service = _build_service_mock()
+
+    with patch(
+        "calendar_auto_register.features.calendar_events.usecase_calendar_events.google_client.service_from_settings",
+        return_value=service,
+    ):
+        client = TestClient(create_app())
+        payload = {
+            "events": [
+                {
+                    "summary": "よてい",
+                    "start": {"date": "2024-03-05"},
+                    "end": {"date": "2024-03-05"},  # start と同じ → 翌日に補正されるべき
+                }
+            ]
+        }
+
+        res = client.post("/calendar/events", json=payload)
+
+        assert res.status_code == 200
+        data = res.json()
+        result = data["results"][0]
+        assert result["status"] == "CREATED"
+        # end.date が翌日に補正されていることを確認
+        assert result["event"]["end"]["date"] == "2024-03-06"
+
+
+def test_終日イベント_複数日_正常登録() -> None:
+    """start < end の複数日終日イベントはそのまま登録される。"""
+    service = _build_service_mock()
+
+    with patch(
+        "calendar_auto_register.features.calendar_events.usecase_calendar_events.google_client.service_from_settings",
+        return_value=service,
+    ):
+        client = TestClient(create_app())
+        payload = {
+            "events": [
+                {
+                    "summary": "旅行",
+                    "start": {"date": "2024-03-05"},
+                    "end": {"date": "2024-03-08"},
+                }
+            ]
+        }
+
+        res = client.post("/calendar/events", json=payload)
+
+        assert res.status_code == 200
+        result = res.json()["results"][0]
+        assert result["status"] == "CREATED"
+        assert result["event"]["end"]["date"] == "2024-03-08"
+
+
+def test_終日イベント_end_が_start_より前_はエラー() -> None:
+    """end.date が start.date より前の場合は FAILED になる。"""
+    service = _build_service_mock()
+
+    with patch(
+        "calendar_auto_register.features.calendar_events.usecase_calendar_events.google_client.service_from_settings",
+        return_value=service,
+    ):
+        client = TestClient(create_app())
+        payload = {
+            "events": [
+                {
+                    "summary": "不正イベント",
+                    "start": {"date": "2024-03-05"},
+                    "end": {"date": "2024-03-04"},  # end < start
+                }
+            ]
+        }
+
+        res = client.post("/calendar/events", json=payload)
+
+        assert res.status_code == 200
+        result = res.json()["results"][0]
+        assert result["status"] == "FAILED"
+        assert result["error"]["code"] == "INVALID_EVENT"
+
+
 def test_bulk_create_event() -> None:
     service = _build_service_mock()
 

@@ -134,11 +134,19 @@ def _normalize_event(
         start_date = _parse_date(event.start.date)
         end_date = _parse_date(event.end.date)
 
-        if end_date <= start_date:
+        if end_date < start_date:
             raise ValueError("end.date は start.date より後である必要があります。")
 
+        # Google Calendar API仕様: end.date は排他的。
+        # LLM が単日イベントを start == end で返す場合に翌日へ自動補正する。
+        if end_date == start_date:
+            end_date = start_date + timedelta(days=1)
+
         normalized_event = event.model_copy(
-            update={"summary": _apply_summary_prefix(event.summary)}
+            update={
+                "summary": _apply_summary_prefix(event.summary),
+                "end": event.end.model_copy(update={"date": end_date.isoformat()}),
+            }
         )
         return normalized_event, start_date, end_date
 
