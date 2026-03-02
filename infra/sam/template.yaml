@@ -202,6 +202,9 @@ Resources:
               Stage: default
               Path: "/mail/parse"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               RequestBody:
                 "s3_key.$": "$.s3_key"
             ResultPath: "$.mail_parse"
@@ -216,6 +219,9 @@ Resources:
               Stage: default
               Path: "/llm/extract-event"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               # [D9] 新フラットスキーマ: normalized_mail フィールドを展開して送信
               # text が null（HTML のみメール）でも from_addr 等があればメールパスで処理される
               RequestBody:
@@ -237,6 +243,9 @@ Resources:
               Stage: default
               Path: "/calendar/events"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               RequestBody:
                 "events.$": "$.llm_extract_event.ResponseBody.events"
             ResultPath: "$.calendar_events"
@@ -257,6 +266,9 @@ Resources:
               Stage: default
               Path: "/line/notify"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               "RequestBody.$": "$.calendar_events.ResponseBody"
             End: true
 
@@ -301,6 +313,9 @@ Resources:
               Stage: default
               Path: "/llm/extract-event"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               RequestBody:
                 "text.$": "$.detail.text"
             ResultPath: "$.llm_extract"
@@ -315,6 +330,9 @@ Resources:
               Stage: default
               Path: "/llm/extract-event-image"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               RequestBody:
                 "message_id.$": "$.detail.message_id"
             ResultPath: "$.llm_extract"
@@ -329,6 +347,9 @@ Resources:
               Stage: default
               Path: "/calendar/events"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               RequestBody:
                 "events.$": "$.llm_extract.ResponseBody.events"
             ResultPath: "$.calendar_events"
@@ -349,6 +370,9 @@ Resources:
               Stage: default
               Path: "/line/notify"
               AuthType: IAM_ROLE
+              Headers:
+                Content-Type:
+                  - application/json
               "RequestBody.$": "$.calendar_events.ResponseBody"
             End: true
 

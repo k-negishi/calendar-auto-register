@@ -40,7 +40,7 @@ jobs:
           ECR_IMAGE_REPOSITORY: ${{ secrets.ECR_IMAGE_REPOSITORY }}
           PROJECT_NAME: calendar-auto-register
           SSM_DOTENV_PARAMETER: /calendar-auto-register/dotenv
-          S3_RAW_MAIL_BUCKET: calendar-auto-register
+          S3_RAW_MAIL_BUCKET: calendar-auto-register-raw-mail
         run: |
           sam deploy \
             --config-file infra/sam/samconfig.toml \
