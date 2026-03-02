@@ -10,6 +10,7 @@ from linebot.v3.messaging import (
     ApiException,
     Configuration,
     MessagingApi,
+    MessagingApiBlob,
     PushMessageRequest,
     TextMessage,
 )
@@ -44,6 +45,37 @@ def push_message(
     try:
         with ApiClient(configuration) as api_client:
             MessagingApi(api_client).push_message(request)
+    except ApiException as exc:
+        status_code = exc.status or 0
+        raise LineApiError(_build_error_message(exc), status_code) from exc
+
+
+def get_message_content(
+    *,
+    channel_access_token: str,
+    message_id: str,
+) -> bytes:
+    """LINE Content API で画像バイナリを取得する。
+
+    Args:
+        channel_access_token: LINE Channel Access Token
+        message_id: LINE message ID
+
+    Returns:
+        画像バイナリ (bytes)
+
+    Raises:
+        LineApiError: API 呼び出し失敗
+    """
+    configuration = Configuration(access_token=channel_access_token)
+
+    try:
+        with ApiClient(configuration) as api_client:
+            blob_api = MessagingApiBlob(api_client)
+            content = blob_api.get_message_content(message_id)
+            if isinstance(content, bytes):
+                return content
+            return content.read()  # type: ignore[union-attr]
     except ApiException as exc:
         status_code = exc.status or 0
         raise LineApiError(_build_error_message(exc), status_code) from exc

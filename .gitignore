@@ -1,5 +1,9 @@
 /ai-note/
 /.idea/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
 /app/src/calendar_auto_register.egg-info/
 .venv/
 /.env.deploy

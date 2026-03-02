@@ -28,6 +28,8 @@ class Settings:
     line_channel_access_token: str | None
     line_user_id: str | None
     api_key: str | None
+    line_channel_secret: str | None  # Layer 1: Webhook 署名検証用
+    allowlist_line_user_ids: list[str]  # Layer 2: 送信者制限用
 
     @property
     def is_local(self) -> bool:
@@ -111,4 +113,6 @@ def load_settings() -> Settings:
         line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"),
         line_user_id=os.getenv("LINE_USER_ID"),
         api_key=os.getenv("API_KEY"),
+        line_channel_secret=os.getenv("LINE_CHANNEL_SECRET"),
+        allowlist_line_user_ids=_load_json_list(os.getenv("ALLOWLIST_LINE_USER_IDS")),
     )

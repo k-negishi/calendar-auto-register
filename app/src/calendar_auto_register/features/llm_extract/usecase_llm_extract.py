@@ -1,7 +1,8 @@
-"""予定抽出ユースケース: メール本文を LLM で解析。"""
+"""予定抽出ユースケース: メール本文・テキスト・画像を LLM で解析。"""
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from typing import Any
@@ -152,6 +153,62 @@ class EventExtractionResponse(BaseModel):
     events: list[GoogleCalendarEventModel] = Field(default_factory=list)
 
 
+def _run_extraction_chain(
+    user_message_text: str,
+    *,
+    settings: Settings,
+) -> list[GoogleCalendarEventModel]:
+    """LangChain チェーン（ChatBedrock + retry + 正規化）を実行する共通実装。
+
+    extract_events() と extract_events_from_raw_text() の両方から呼び出される。
+    LLM・リトライ・正規化の設定を一箇所に集約する。
+
+    Args:
+        user_message_text: LLM に渡すユーザーメッセージ
+        settings: アプリケーション設定
+
+    Returns:
+        抽出された予定リスト（Google Calendar API 互換形式、半角正規化済み）
+    """
+    if not settings.bedrock_model_id:
+        raise ValueError("Bedrock モデルID が設定されていません")
+
+    try:
+        bedrock_boto3 = boto3.client("bedrock-runtime", region_name=settings.region)
+
+        if ChatBedrock is None:
+            raise RuntimeError("langchain_aws がインストールされていません。")
+
+        chat: Any = ChatBedrock(
+            model=settings.bedrock_model_id,
+            client=bedrock_boto3,
+            model_kwargs={"max_tokens": 2048},
+        )
+        output_parser = NormalizedJsonOutputParser(pydantic_object=EventExtractionResponse)
+        chain = (chat | output_parser).with_retry(
+            retry_if_exception_type=(ValueError, RuntimeError),
+            stop_after_attempt=5,
+            wait_exponential_jitter=True,
+            exponential_jitter_params=ExponentialJitterParams(
+                initial=1,
+                max=10,
+                exp_base=2,
+            ),
+        )
+        messages = [
+            SystemMessage(content=CALENDAR_EVENT_EXTRACTION_SYSTEM),
+            HumanMessage(content=user_message_text),
+        ]
+        parsed_dict = chain.invoke(messages)
+        parsed_response = EventExtractionResponse(**parsed_dict)
+        return [_normalize_event_to_half_width(e) for e in parsed_response.events]
+
+    except ValueError as exc:
+        raise exc
+    except Exception as exc:
+        raise RuntimeError(f"LLM 呼び出し失敗: {exc}") from exc
+
+
 def extract_events(
     normalized_mail: NormalizedMail,
     *,
@@ -178,81 +235,139 @@ def extract_events(
         ValueError: LLM 出力が無効な場合
         RuntimeError: Bedrock API エラー
     """
+    # Step 1: メール本文を前処理（HTML削除、ノイズ除去）
+    cleaned_text = _preprocess_mail_body(normalized_mail)
 
-    if not settings.bedrock_model_id:
-        raise ValueError("Bedrock モデルID が設定されていません")
+    # 前処理済みメール情報を作成
+    preprocessed_mail = NormalizedMail(
+        from_addr=normalized_mail.from_addr,
+        reply_to=normalized_mail.reply_to,
+        subject=normalized_mail.subject,
+        received_at=normalized_mail.received_at,
+        text=cleaned_text,
+        html=None,
+        attachments=[],
+    )
+
+    # Step 2: プロンプト構築（前処理済みメール）
+    user_message_text = build_extraction_user_message(preprocessed_mail)
+
+    return _run_extraction_chain(user_message_text, settings=settings)
+
+
+def extract_events_from_raw_text(
+    text: str,
+    *,
+    settings: Settings,
+) -> list[GoogleCalendarEventModel]:
+    """raw テキストから LLM でイベント情報を抽出する（メール前処理なし）。
+
+    LINE テキストなど、メール以外の入力に対して使用する。
+    _preprocess_mail_body() を経由しないため、Unsubscribe 除去・HTML 解析が行われない。
+    _run_extraction_chain() を通じてリトライ・正規化を共有する。
+
+    Args:
+        text: 入力テキスト（HTML 解析・Unsubscribe 除去なし）
+        settings: アプリケーション設定
+
+    Returns:
+        抽出された予定リスト（半角正規化済み）
+
+    Raises:
+        ValueError: LLM 出力が無効な場合
+        RuntimeError: Bedrock API エラー
+    """
+    from calendar_auto_register.core.prompts import build_line_text_user_message
+
+    user_message = build_line_text_user_message(text)
+    return _run_extraction_chain(user_message, settings=settings)
+
+
+# D4: 画像パスでも normalize_event_to_half_width() を使えるよう公開エイリアスを定義
+normalize_event_to_half_width = _normalize_event_to_half_width
+
+
+def _parse_image_llm_response(
+    response: dict[str, object],
+) -> list[GoogleCalendarEventModel]:
+    """Bedrock Vision レスポンスをパースして GoogleCalendarEventModel のリストを返す。
+
+    Anthropic Messages API 形式（content リスト → text → JSON）でパースする。
+    """
+    content = response.get("content", [])
+    if not isinstance(content, list) or not content:
+        return []
+
+    first = content[0]
+    text = first.get("text", "") if isinstance(first, dict) else ""
+    if not text:
+        return []
 
     try:
-        # Step 1: メール本文を前処理（HTML削除、ノイズ除去）
-        # これにより LLM への入力を約90%削減し、タイムアウト回避
-        # URL 前後の説明文脈は保持される
-        cleaned_text = _preprocess_mail_body(normalized_mail)
+        parsed = json.loads(str(text))
+    except (json.JSONDecodeError, ValueError):
+        return []
 
-        # 前処理済みメール情報を作成
-        preprocessed_mail = NormalizedMail(
-            from_addr=normalized_mail.from_addr,
-            reply_to=normalized_mail.reply_to,
-            subject=normalized_mail.subject,
-            received_at=normalized_mail.received_at,
-            text=cleaned_text,
-            html=None,  # 前処理済みなので HTML は不要
-            attachments=[],
+    events_data = parsed.get("events", [])
+    return [GoogleCalendarEventModel(**e) for e in events_data]
+
+
+def extract_events_from_image(
+    message_id: str,
+    *,
+    settings: Settings,
+) -> list[GoogleCalendarEventModel]:
+    """LINE 画像メッセージから Vision LLM でイベント情報を抽出する。
+
+    [D4] テキストパスと同一の正規化（normalize_event_to_half_width）を適用する。
+    [D5] tenacity @retry（5回、指数バックオフ+ジッター）でリトライする。
+
+    Args:
+        message_id: LINE Content API のメッセージ ID
+        settings: アプリケーション設定
+
+    Returns:
+        抽出された予定リスト（半角正規化済み）
+
+    Raises:
+        ValueError: LINE_CHANNEL_ACCESS_TOKEN または BEDROCK_MODEL_ID が未設定
+        RuntimeError: LINE Content API または Bedrock API エラー
+    """
+    from tenacity import retry, stop_after_attempt, wait_exponential_jitter
+
+    from calendar_auto_register.clients import bedrock_client, line_client
+    from calendar_auto_register.core.prompts import CALENDAR_EVENT_EXTRACTION_SYSTEM
+
+    if not settings.line_channel_access_token:
+        raise ValueError("LINE_CHANNEL_ACCESS_TOKEN が未設定です")
+    if not settings.bedrock_model_id:
+        raise ValueError("BEDROCK_MODEL_ID が未設定です")
+
+    try:
+        image_bytes = line_client.get_message_content(
+            channel_access_token=settings.line_channel_access_token,
+            message_id=message_id,
         )
-
-        # AWS Bedrock クライアントを初期化（東京リージョン固定）
-        bedrock_client = boto3.client("bedrock-runtime", region_name=settings.region)
-
-        if ChatBedrock is None:
-            raise RuntimeError("langchain_aws がインストールされていません。")
-
-        chat: Any = ChatBedrock(
-            model=settings.bedrock_model_id,
-            client=bedrock_client,
-            model_kwargs={"max_tokens": 2048},
-        )
-
-        # カスタム出力パーサーを初期化（半角正規化付き）
-        output_parser = NormalizedJsonOutputParser(pydantic_object=EventExtractionResponse)
-
-        # Runnable チェーン（LLM → カスタムパーサー → 正規化）
-        # リトライ機能付き: 最大5回、エクスポーネンシャルバックオフ
-        chain = (chat | output_parser).with_retry(
-            retry_if_exception_type=(ValueError, RuntimeError),
-            stop_after_attempt=5,
-            wait_exponential_jitter=True,
-            exponential_jitter_params=ExponentialJitterParams(
-                initial=1,
-                max=10,
-                exp_base=2,
-            ),
-        )
-
-        # Step 2: プロンプト構築（前処理済みメール）
-        user_message_text = build_extraction_user_message(preprocessed_mail)
-
-        # メッセージの構築
-        messages = [
-            SystemMessage(content=CALENDAR_EVENT_EXTRACTION_SYSTEM),
-            HumanMessage(content=user_message_text),
-        ]
-
-        # チェーン実行（リトライ付き）
-        # NormalizedJsonOutputParser が parse メソッドで正規化を実施
-        parsed_dict = chain.invoke(messages)
-
-        # Pydantic で検証
-        parsed_response = EventExtractionResponse(**parsed_dict)
-
-        # 最終的な正規化を適用（テストモックやパーサー経由でない場合に備える）
-        normalized_events = [
-            _normalize_event_to_half_width(event)
-            for event in parsed_response.events
-        ]
-
-        # 正規化済みの予定を返す
-        return normalized_events
-
-    except ValueError as exc:
-        raise exc
     except Exception as exc:
-        raise RuntimeError(f"LLM 呼び出し失敗: {exc}") from exc
+        raise RuntimeError(f"LINE 画像取得失敗: {exc}") from exc
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential_jitter(initial=1, max=10),
+        reraise=True,
+    )
+    def _invoke_with_retry() -> list[GoogleCalendarEventModel]:
+        response = bedrock_client.invoke_model_with_image(
+            region=settings.region,
+            model_id=settings.bedrock_model_id,  # type: ignore[arg-type]
+            image_bytes=image_bytes,
+            prompt=CALENDAR_EVENT_EXTRACTION_SYSTEM,
+        )
+        events = _parse_image_llm_response(response)
+        # [D4] テキストパスと同一の正規化を適用
+        return [_normalize_event_to_half_width(e) for e in events]
+
+    try:
+        return _invoke_with_retry()
+    except Exception as exc:
+        raise RuntimeError(f"画像 LLM 抽出失敗: {exc}") from exc

@@ -15,6 +15,7 @@ from .core.middleware import api_key_middleware, request_id_middleware
 from .core.settings import load_settings
 from .features.calendar_events.router_calendar_events import router as calendar_router
 from .features.line_notify_post.router_line_notify_post import router as line_router
+from .features.line_webhook.router_line_webhook_post import router as line_webhook_router
 from .features.llm_extract.router_llm_extract import router as llm_router
 from .features.mailparse_post.router_mailparse_post import router as mail_router
 
@@ -69,5 +70,6 @@ def create_app() -> FastAPI:
     app.include_router(llm_router)
     app.include_router(calendar_router)
     app.include_router(line_router)
+    app.include_router(line_webhook_router)
 
     return app
