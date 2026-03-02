@@ -189,6 +189,7 @@ def test_E2E_テキストメッセージ完全フロー() -> None:
     import os
     secret = "test_channel_secret"
     os.environ["LINE_CHANNEL_SECRET"] = secret
+    os.environ.pop("ALLOWLIST_LINE_USER_IDS", None)  # CI環境の残留値をクリア
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
@@ -220,6 +221,7 @@ def test_E2E_画像メッセージ_putEventsが呼ばれる() -> None:
     import os
     secret = "test_channel_secret"
     os.environ["LINE_CHANNEL_SECRET"] = secret
+    os.environ.pop("ALLOWLIST_LINE_USER_IDS", None)  # CI環境の残留値をクリア
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
