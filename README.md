@@ -11,7 +11,8 @@
 ## 機能
 
 - **メール解析**: S3 に保存されたメールファイルを取得・解析
-- **LLM による情報抽出**: Bedrock 経由で LLM を呼び出し、メール本文からイベント情報を抽出
+- **LINE メッセージ受信**: LINE Webhook 経由でテキスト・画像メッセージを受信
+- **LLM による情報抽出**: Bedrock 経由で LLM を呼び出し、メール本文・LINE テキスト・LINE 画像からイベント情報を抽出
 - **Google カレンダー登録**: 抽出したイベント情報を一括で Google カレンダーに登録
 - **LINE 通知**: 登録結果（成功/失敗の件数と詳細）を LINE Messaging API SDK で通知
 
@@ -34,42 +35,108 @@
 - LINE Messaging API SDK（登録通知）
 
 
+### エンドポイント一覧
+
+| エンドポイント | 説明 |
+|---|---|
+| `GET /healthz` | ヘルスチェック |
+| `POST /mail/parse` | S3 の RAW メールを取得・正規化 |
+| `POST /llm/extract-event` | テキスト／メールコンテキストから LLM でイベント抽出 |
+| `POST /llm/extract-event-image` | LINE 画像メッセージ（message_id）から Bedrock Vision でイベント抽出 |
+| `POST /calendar/events` | 抽出したイベントを Google カレンダーに一括登録 |
+| `POST /line/notify` | 登録結果を LINE Push で通知 |
+| `POST /line/webhook` | LINE Webhook 受信（HMAC 検証 + EventBridge putEvents のみ） |
+
 ### アーキテクチャ図
 ![architecture.png](docs/architecture.png)
 
+### エンドツーエンドフロー
+
+#### メール処理フロー（Mail SM）
+
+```
+Client（メールソフト）
+    │ メール送信
+    ▼
+SES → S3（RAW メール保存）
+    │ S3 Object Created
+    ▼
+EventBridge（Mail Rule）
+    │ StartExecution
+    ▼
+Step Functions（Mail SM）
+    │
+    ├─ POST /mail/parse             S3 からメールを取得・正規化
+    │
+    ├─ POST /llm/extract-event      Bedrock でイベント抽出（メールコンテキスト付き）
+    │
+    ├─ POST /calendar/events        Google Calendar に登録（リトライ最大3回）
+    │
+    └─ POST /line/notify            LINE に結果を通知
+```
+
+#### LINE メッセージ処理フロー（LINE SM）
+
+```
+LINE User
+    │ POST /line/webhook
+    ▼
+API Gateway → Lambda（HMAC 検証 + userId 確認）
+    │ putEvents
+    ▼
+EventBridge（LINE Rule）
+    │ StartExecution
+    ▼
+Step Functions（LINE SM）
+    │
+    ├─[text]  POST /llm/extract-event        Bedrock でイベント抽出
+    ├─[image] POST /llm/extract-event-image  LINE Content API → Bedrock Vision でイベント抽出
+    │
+    ├─ POST /calendar/events        Google Calendar に登録（リトライ最大3回）
+    │
+    └─ POST /line/notify            LINE に結果を通知
+```
+
+> LINE Webhook は LINE Platform の 5 秒制約があるため、`POST /line/webhook` は EventBridge への `putEvents` のみ実施して即時 200 OK を返す。LLM 処理・カレンダー登録・通知は SFN が非同期で担う。
+
+---
+
 ### Step Functions ワークフロー
 
+State Machine は Mail SM と LINE SM の 2 つで構成される。
+
+#### Mail SM（メール処理）
+
+EventBridge（S3 Object Created）→ Mail SM 起動
+
 ```
-┌─────────────────────────────────┐
-│  [Start]                        │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│ [API: POST /mail/parse]         │
-│ → S3 からメールを取得              │ 
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│ [API: POST /llm/extract-event]  │
-│ → LLM でメール解析                │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│ [API: POST /calendar/events]    │
-│ → Google カレンダーに登録          │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│ [API: POST /line/notify]        │
-│ → LINE に結果を通知               │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│ [End]                           │
-└─────────────────────────────────┘
+[POST /mail/parse]        S3 からメールを取得・正規化
+        ↓
+[POST /llm/extract-event] メールコンテキスト付きで LLM 解析
+        ↓
+[POST /calendar/events]   Google カレンダーに登録（リトライ最大3回）
+        ↓
+[POST /line/notify]       LINE に結果を通知
 ```
 
-※この構成はあくまで検証のため本アプリケーションレベルだと過剰設計であり、API で分割することなく単一の Lambda 関数で完結させるのが本来は望ましい。
+#### LINE SM（LINE メッセージ処理）
+
+EventBridge（LINE Webhook → putEvents）→ LINE SM 起動
+
+```
+[CheckMessageType]        message_type で分岐
+    ├─ text  → [POST /llm/extract-event]        テキストを LLM 解析
+    ├─ image → [POST /llm/extract-event-image]  LINE Content API + Bedrock Vision で解析
+    └─ 他    → [Succeed] 何もしない（sticker等）
+                   ↓
+         [POST /calendar/events]   Google カレンダーに登録（リトライ最大3回）
+                   ↓
+         [POST /line/notify]       LINE に結果を通知
+```
+
+※ LINE Webhook は LINE Platform の 5 秒制約を解決するため、`POST /line/webhook` は EventBridge への putEvents のみ実施し、即時 200 OK を返す。LLM 処理・カレンダー登録・通知はすべて SFN が非同期で処理する。
+
+※この SFN を使ったオーケストレーション構成はあくまで検証のため本アプリケーションレベルだと過剰設計であり、単一の Lambda 関数で完結させるのが本来は望ましい。
 
 ---
 
@@ -112,19 +179,44 @@ curl -X POST http://localhost:8000/mail/parse \
   -H "Content-Type: application/json" \
   -d '{"s3_key":"2025/11/09/demo-mail.eml"}'
 
-# /llm/extract-event（メール本文から予定抽出）
+# /llm/extract-event（メール本文から予定抽出 / フラットスキーマ）
 curl -X POST http://localhost:8000/llm/extract-event \
   -H "Content-Type: application/json" \
   -d '{
-    "normalized_mail": {
-      "from_addr": "sales@example.com",
-      "reply_to": null,
-      "subject": "【12/25】営業会議のご案内",
-      "received_at": "2024-12-20T04:46:00Z",
-      "text": "各位\n\nいつもお世話になっております。営業会議のご案内です。\n\n【日時】2024/12/25(水) 14:00-15:00\n【場所】オンライン\n【議題】四半期決算\n\nご出席のほどよろしくお願いいたします。\n",
-      "html": null,
-      "attachments": []
-    }
+    "text": "各位\n\nいつもお世話になっております。営業会議のご案内です。\n\n【日時】2024/12/25(水) 14:00-15:00\n【場所】オンライン\n【議題】四半期決算\n\nご出席のほどよろしくお願いいたします。\n",
+    "from_addr": "sales@example.com",
+    "reply_to": null,
+    "subject": "【12/25】営業会議のご案内",
+    "received_at": "2024-12-20T04:46:00Z",
+    "html": null
+  }'
+
+# /llm/extract-event（LINE テキストから予定抽出 / text のみ）
+curl -X POST http://localhost:8000/llm/extract-event \
+  -H "Content-Type: application/json" \
+  -d '{"text": "明日14時から渋谷でミーティングがあります"}'
+
+# /llm/extract-event-image（LINE 画像から予定抽出）
+curl -X POST http://localhost:8000/llm/extract-event-image \
+  -H "Content-Type: application/json" \
+  -d '{"message_id": "line-message-id-xxx"}'
+
+# /line/webhook（LINE Webhook 受信）
+curl -X POST http://localhost:8000/line/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Line-Signature: <HMAC-SHA256-signature>" \
+  -d '{
+    "destination": "Uxxxxxxxxx",
+    "events": [
+      {
+        "type": "message",
+        "message": {"type": "text", "id": "msg-id-1", "text": "明日14時からミーティング"},
+        "source": {"type": "user", "userId": "Uxxxxxxxxx"},
+        "replyToken": "reply-token-xxx",
+        "timestamp": 1700000000000,
+        "mode": "active"
+      }
+    ]
   }'
 
 # /calendar/events(カレンダー一括登録)
