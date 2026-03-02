@@ -2,719 +2,365 @@
 
 ## 1. アーキテクチャ概要
 
-### 1.1 運用構成
+### 1.1 全体構成
 
-- **トリガー**: LINE Messaging API Webhook（API Gateway経由）
-- **実行環境**: AWS Lambda (Python 3.12、既存Lambdaに統合)
-- **タイムアウト**: 120秒
-- **メモリ**: 1024MB
-
-### 1.2 処理パイプライン
-
-#### アーキテクチャパターン：非同期オーケストレーション
-
-既存のメール処理フローと同様に、**Step Functions**を使用してオーケストレーション。
-
-**重要**: LINE Webhookは5秒以内に応答が必要なため、Webhook受信後、即座に200 OKを返却し、Step Functionsを非同期起動する。
-
-#### テキストメッセージフロー（Step Functions）
+本プロジェクトは以下の 3 層で構成される。
 
 ```
-┌─────────────────┐
-│ LINE Platform   │
-└────┬────────────┘
-     │ Webhook POST
-     ▼
-┌─────────────────────────────────┐
-│ API Gateway                      │
-│ POST /line/webhook               │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ Lambda: Webhook受信              │
-│ - 署名検証                       │
-│ - Step Functions起動             │
-│ - 即座に 200 OK 返却             │
-└────┬────────────────────────────┘
-     │
-     ▼ (非同期)
-┌─────────────────────────────────┐
-│ Step Functions                   │
-│ LineWebhookWorkflow              │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ [Task 1]                         │
-│ Lambda: Vision LLM呼び出し        │
-│ - テキストからイベント抽出        │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ [Task 2]                         │
-│ Lambda: POST /calendar/events    │
-│ - Google Calendar登録             │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ [Task 3]                         │
-│ Lambda: POST /line/notify        │
-│ - LINE通知送信                    │
-└─────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Lambdalith（単一 Lambda + FastAPI + Mangum）            │
+│  ─ 各処理ステップを独立した HTTP API として提供          │
+│  ─ ビジネスロジックはここに集約                         │
+└─────────────────────────────────────────────────────────┘
+             ▲ HTTP (API Gateway 経由)
+             │  SFN HTTP Task で呼び出す
+┌─────────────────────────────────────────────────────────┐
+│  Step Functions（オーケストレーター）                    │
+│  ─ Mail State Machine                                   │
+│  ─ LINE State Machine                                   │
+└─────────────────────────────────────────────────────────┘
+             ▲ StartExecution
+┌─────────────────────────────────────────────────────────┐
+│  EventBridge                                            │
+│  ─ S3 Event → Mail SM を起動                           │
+│  ─ LINE Webhook → LINE SM を起動                       │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 実装アプローチ（TDD）
+**設計方針:**
 
-実装は Kent Beck の TDD を前提に進める。全ての機能追加・変更は、以下のサイクルを1単位として進行する。
+- **Lambdalith** = 単一 Lambda が全 API ルートを処理（FastAPI + Mangum）。ビジネスロジックの単位は HTTP エンドポイント
+- **SFN** = オーケストレーター。各ステップを HTTP Task で Lambdalith の API を順番に呼ぶ
+- **EventBridge** = SFN の起動トリガー（S3 Event / LINE Webhook からの putEvents）
+- **Python 関数直接呼び出しによるオーケストレーションは行わない**。各ステップは API を経由する
 
-1. **RED**
-   - 期待仕様を先にテストとして記述し、失敗を確認する
-   - 正常系だけでなく、署名不一致・外部API失敗・タイムアウトを先に固定化する
-2. **GREEN**
-   - 失敗テストを最短で通す最小実装を行う
-   - 新規ロジックは副作用境界（HTTPクライアント、AWS SDK呼び出し）を薄く保つ
-3. **REFACTOR**
-   - 重複除去、責務分離、命名改善を実施する
-   - テストの可読性と保守性（fixture整理、モック責務の明確化）を同時に改善する
-
-**完了条件（各サイクル共通）**
-- 追加したテストが再現性を持って成功する
-- 既存テストが回帰なく成功する
-- mypy/ruffの静的チェックを通過する
-
-#### 画像メッセージフロー（Step Functions）
+### 1.2 メール処理フロー
 
 ```
-┌─────────────────┐
-│ LINE Platform   │
-└────┬────────────┘
-     │ Webhook POST
-     ▼
-┌─────────────────────────────────┐
-│ API Gateway                      │
-│ POST /line/webhook               │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ Lambda: Webhook受信              │
-│ - 署名検証                       │
-│ - 画像メッセージ判定              │
-│ - Step Functions起動             │
-│ - 即座に 200 OK 返却             │
-└────┬────────────────────────────┘
-     │
-     ▼ (非同期)
-┌─────────────────────────────────┐
-│ Step Functions                   │
-│ LineWebhookWorkflow              │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ [Task 1]                         │
-│ Lambda: LINE Content API         │
-│ - 画像バイナリダウンロード        │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ [Task 2]                         │
-│ Lambda: Vision LLM呼び出し        │
-│ - 画像から直接イベント抽出        │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ [Task 3]                         │
-│ Lambda: POST /calendar/events    │
-└────┬────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────┐
-│ [Task 4]                         │
-│ Lambda: POST /line/notify        │
-└─────────────────────────────────┘
+SES → S3
+  ↓ S3 Event Notification
+EventBridge
+  ↓ Rule: source=aws.s3, bucket=calendar-auto-register → StartExecution
+Mail State Machine (Step Functions)
+  → POST /mail/parse              （S3 bucket/key → NormalizedMail）
+  → POST /llm/extract-event       （NormalizedMail → events）
+  → POST /calendar/events         （events → results）
+  → POST /line/notify             （results → LINE 通知）
 ```
+
+### 1.3 LINE Webhook フロー
+
+```
+LINE Platform
+  ↓ POST /line/webhook（X-Line-Signature ヘッダ付き）
+API Gateway → Lambda（Lambdalith）
+  ↓ [Layer 1] HMAC-SHA256 署名検証 → NG: 403
+  ↓ [Layer 2] userId allowlist 検証 → NG: スキップ（200 OK）
+  ↓ EventBridge.putEvents（LINE イベント詳細を乗せる）
+  ↓ 200 OK ← LINE Platform に即返却（5 秒制約を解消）
+
+EventBridge
+  ↓ Rule: source=calendar-auto-register.line → StartExecution
+LINE State Machine (Step Functions)
+  → Choice: message.type?
+      text  → POST /llm/extract-event        （text → events）
+      image → POST /llm/extract-event-image  （message_id → 画像DL → events）
+  → POST /calendar/events
+  → POST /line/notify
+```
+
+### 1.4 実装アプローチ（TDD）
+
+Kent Beck の TDD を前提に進める。
+
+1. **RED** - 期待仕様を先にテストとして記述し、失敗を確認する
+2. **GREEN** - テストを通す最小実装のみ行う
+3. **REFACTOR** - 重複除去、責務分離、命名改善を実施する
 
 ---
 
-## 2. コンポーネント設計
+## 2. エンドポイント設計
 
-### 2.1 レイヤードアーキテクチャ
+### 2.1 エンドポイント一覧
 
-既存のアーキテクチャパターンを踏襲：
+| Endpoint | Input | Output | 用途 |
+|---|---|---|---|
+| `POST /mail/parse` | S3 bucket/key | NormalizedMail | メール正規化（既存） |
+| `POST /llm/extract-event` | text + 任意でメールコンテキスト | events | LLM 抽出（統合・拡張） |
+| `POST /llm/extract-event-image` | message_id | events | 画像 LLM 抽出（新規） |
+| `POST /calendar/events` | events | results | カレンダー登録（既存） |
+| `POST /line/notify` | results | - | LINE 通知（既存） |
+| `POST /line/webhook` | LINE Webhook body | 200 OK | Webhook 受付（新規・薄いGW） |
 
-```
-router層 (API endpoint)
-    ↓
-schemas層 (Pydantic models)
-    ↓
-usecase層 (business logic)
-    ↓
-clients層 (external API clients)
-    ↓
-config層 (settings)
-```
+### 2.2 `POST /llm/extract-event` スキーマ統合
 
-### 2.2 新規ファイル構成
-
-```
-app/src/calendar_auto_register/
-├── features/
-│   └── line_webhook/
-│       ├── __init__.py
-│       ├── router_line_webhook_post.py      # Webhook受信ルーター
-│       ├── schemas_line_webhook_post.py     # リクエスト/レスポンススキーマ
-│       └── usecase_line_webhook_post.py     # ビジネスロジック
-├── clients/
-│   ├── line_content_client.py              # LINE Content API クライアント
-│   └── bedrock_vision_client.py            # Bedrock Vision クライアント
-└── middleware/
-    └── line_signature_verifier.py          # 署名検証ミドルウェア
-```
-
----
-
-## 3. 詳細設計
-
-### 3.1 Webhook受信処理
-
-#### router_line_webhook_post.py
+メールとテキストの両方を 1 エンドポイントで処理する。
 
 ```python
-from fastapi import APIRouter, Request, HTTPException, Depends
-from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
-    LineWebhookRequest,
-    LineWebhookResponse
-)
-from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-    LineWebhookUsecase
-)
-from calendar_auto_register.middleware.line_signature_verifier import verify_line_signature
+class LlmExtractEventRequest(BaseModel):
+    # 必須（LINE テキスト / メール本文）
+    text: str
 
-router = APIRouter()
+    # メール固有（任意）
+    html: str | None = None           # HTML 版。存在すれば前処理（タグ除去・Unsubscribe 削除）を適用
+    from_addr: str | None = None      # LLM プロンプトのコンテキストとして使用
+    subject: str | None = None
+    received_at: datetime | None = None
 
-@router.post("/line/webhook", response_model=LineWebhookResponse)
-async def line_webhook_post(
-    request: Request,
-    webhook_request: LineWebhookRequest,
-    usecase: LineWebhookUsecase = Depends()
-):
-    """LINE Messaging API Webhook受信"""
-    # 署名検証
-    signature = request.headers.get("X-Line-Signature")
+    model_config = ConfigDict(extra="forbid")
+```
+
+**コードパス:**
+
+| リクエスト | 処理 |
+|---|---|
+| `text` のみ | `extract_events_from_raw_text(text)` ← LINE テキストパス |
+| `text` + `from_addr` / `subject` 等 | `extract_events(NormalizedMail(...))` ← メールパス（前処理あり） |
+
+**既存の `NormalizedMailModel` ラッパーは廃止。** `text` 必須という明確な入力契約に統一する。
+
+### 2.3 `POST /llm/extract-event-image`（新規）
+
+```python
+class LlmExtractImageEventRequest(BaseModel):
+    message_id: str    # LINE Content API のメッセージ ID
+    model_config = ConfigDict(extra="forbid")
+
+class LlmExtractImageEventResponse(BaseModel):
+    events: list[GoogleCalendarEventModel]
+```
+
+**処理フロー:**
+
+1. `line_client.get_message_content(message_id)` → `bytes`
+2. `bedrock_client.invoke_model_with_image(image_bytes, prompt=CALENDAR_EVENT_EXTRACTION_SYSTEM)` → raw response
+3. `_parse_llm_response(response)` → `list[GoogleCalendarEventModel]`
+4. `normalize_event_to_half_width(event)` を各イベントに適用（D4）
+5. リトライ: `@retry(stop=stop_after_attempt(5), wait=wait_exponential_jitter(1, 10))` (D5)
+
+### 2.4 `POST /line/webhook`（薄い Gateway）
+
+```python
+@router.post("/webhook")
+async def line_webhook_post(request: Request) -> dict:
+    # 1. raw body 読み取り
     body = await request.body()
 
-    if not verify_line_signature(body, signature, settings.LINE_CHANNEL_SECRET):
-        raise HTTPException(status_code=403, detail="Invalid signature")
+    # 2. LINE_CHANNEL_SECRET 確認
+    if not settings.line_channel_secret:
+        raise HTTPException(status_code=500, ...)
 
-    # イベント処理
-    await usecase.handle_webhook_events(webhook_request.events)
+    # 3. [Layer 1] HMAC-SHA256 署名検証
+    if not verify_line_signature(body=body, ...):
+        raise HTTPException(status_code=403, ...)
 
-    return LineWebhookResponse()
+    # 4. パース
+    webhook_request = LineWebhookRequest(**json.loads(body))
+
+    # 5. [Layer 2] userId チェック + EventBridge.putEvents
+    process_webhook(webhook_request, settings=settings)
+
+    # 6. 200 OK（即返却）
+    return {}
 ```
-
----
-
-### 3.2 署名検証
-
-#### middleware/line_signature_verifier.py
 
 ```python
-import hmac
-import hashlib
-import base64
+def process_webhook(request: LineWebhookRequest, *, settings: Settings) -> None:
+    """userId 検証 + EventBridge.putEvents。LLM/Calendar/LINE 通知はここでは行わない。"""
+    for event in request.events:
+        if event.type != "message" or event.message is None:
+            continue
 
-def verify_line_signature(body: bytes, signature: str, channel_secret: str) -> bool:
-    """
-    LINE Webhook署名検証
+        # [Layer 2] userId allowlist
+        if settings.allowlist_line_user_ids and \
+                event.source.userId not in settings.allowlist_line_user_ids:
+            logger.warning("未認可 userId: %s", event.source.userId)
+            continue
 
-    Args:
-        body: リクエストボディ（bytes）
-        signature: X-Line-Signatureヘッダー値
-        channel_secret: LINE Channel Secret
+        _put_line_event(event, settings=settings)
 
-    Returns:
-        True if valid, False otherwise
-    """
-    hash_digest = hmac.new(
-        channel_secret.encode('utf-8'),
-        body,
-        hashlib.sha256
-    ).digest()
 
-    expected_signature = base64.b64encode(hash_digest).decode('utf-8')
-
-    return hmac.compare_digest(signature, expected_signature)
+def _put_line_event(event: LineWebhookEvent, *, settings: Settings) -> None:
+    """EventBridge に LINE イベントを発行する。"""
+    import boto3, json
+    client = boto3.client("events", region_name=settings.region)
+    client.put_events(Entries=[{
+        "Source": "calendar-auto-register.line",
+        "DetailType": "LineMessageEvent",
+        "Detail": json.dumps({
+            "message_type": event.message.type,
+            "message_id": event.message.id,
+            "text": event.message.text,
+            "user_id": event.source.userId,
+        }),
+        "EventBusName": "default",
+    }])
 ```
 
 ---
 
-### 3.3 Webhookイベント処理（Step Functions起動）
+## 3. セキュリティ設計
 
-#### usecase_line_webhook_post.py
+### 3.1 2 層防御（LINE Webhook）
 
-**重要**: Webhook受信後、Step Functionsを非同期起動し、即座に200 OKを返却する。
-
-```python
-import boto3
-import json
-import time
-import random
-from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
-    LineMessageEvent
-)
-from calendar_auto_register.config.settings import settings
-
-class LineWebhookUsecase:
-    """
-    LINE Webhook受信後、Step Functionsを非同期起動するユースケース
-    """
-    def __init__(self):
-        self.sfn_client = boto3.client('stepfunctions', region_name=settings.AWS_REGION)
-        self.state_machine_arn = settings.LINE_WEBHOOK_STATE_MACHINE_ARN
-
-    async def handle_webhook_events(self, events: list[LineMessageEvent]):
-        """
-        Webhookイベントを受け取り、Step Functionsを起動
-
-        Args:
-            events: LINE Webhookイベントリスト
-        """
-        for event in events:
-            if event.type != "message":
-                continue  # メッセージイベント以外はスキップ
-
-            # Step Functions起動用のペイロード作成
-            execution_input = {
-                "event": event.dict(),
-                "source": "line_webhook",
-                "timestamp": int(time.time())
-            }
-
-            # 実行名生成（ユニーク性確保）
-            execution_name = f"line-webhook-{int(time.time())}-{random.randint(1000, 9999)}"
-
-            try:
-                # Step Functions非同期起動
-                response = self.sfn_client.start_execution(
-                    stateMachineArn=self.state_machine_arn,
-                    name=execution_name,
-                    input=json.dumps(execution_input)
-                )
-
-                # ログ出力
-                print(f"Step Functions started: {response['executionArn']}")
-
-            except Exception as e:
-                # 起動失敗時はログに記録（ユーザー通知は不可）
-                print(f"Failed to start Step Functions: {str(e)}")
-                # CloudWatch Alarmでモニタリング
 ```
+[Layer 1] X-Line-Signature 検証 (router 層)
+  HMAC-SHA256 で署名を検証。偽造 Webhook を完全遮断。
+  → NG: 403 Forbidden（LINE Platform は再送しない）
+
+[Layer 2] source.userId allowlist 検証 (usecase 層)
+  allowlist_line_user_ids に含まれない userId のイベントをスキップ。
+  LINE URL・Channel Secret 流出時の不正利用を防止。
+  → NG: 200 OK（LINE 要件を満たす）+ WARNING ログ + putEvents スキップ
+```
+
+### 3.2 SFN → API Gateway 認証
+
+SFN HTTP Task は API Gateway を呼ぶ際に `X-API-Key` ヘッダを付与する。
+API Key は SFN の State 定義の Parameters に SecureString 参照で設定する（SSM Parameter Store）。
 
 ---
 
-### 3.4 LINE Content API クライアント
+## 4. SFN State Machine 設計
 
-#### clients/line_content_client.py
+### 4.1 Mail State Machine
 
-```python
-import httpx
-from calendar_auto_register.config.settings import settings
-
-class LineContentClient:
-    """LINE Content API クライアント"""
-
-    BASE_URL = "https://api-data.line.me/v2/bot/message"
-
-    def __init__(self):
-        self.access_token = settings.LINE_CHANNEL_ACCESS_TOKEN
-
-    async def get_message_content(self, message_id: str) -> bytes:
-        """
-        画像バイナリを取得
-
-        Args:
-            message_id: LINE message ID
-
-        Returns:
-            画像バイナリ（bytes）
-
-        Raises:
-            httpx.HTTPError: API呼び出し失敗
-        """
-        url = f"{self.BASE_URL}/{message_id}/content"
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers, timeout=30.0)
-            response.raise_for_status()
-            return response.content
-```
-
----
-
-### 3.5 Bedrock Vision クライアント
-
-#### clients/bedrock_vision_client.py
-
-```python
-import json
-import base64
-import boto3
-from calendar_auto_register.config.settings import settings
-from calendar_auto_register.features.calendar_events.schemas_calendar_events_post import (
-    CalendarEvent
-)
-
-class BedrockVisionClient:
-    """Bedrock Vision API クライアント"""
-
-    def __init__(self):
-        self.client = boto3.client('bedrock-runtime', region_name=settings.AWS_REGION)
-        self.model_id = settings.BEDROCK_VISION_MODEL_ID
-
-    async def extract_events_from_text(self, text: str) -> list[CalendarEvent]:
-        """
-        テキストからイベント抽出
-
-        Args:
-            text: 入力テキスト
-
-        Returns:
-            CalendarEventのリスト
-        """
-        prompt = self._build_extraction_prompt(text)
-
-        response = self.client.invoke_model(
-            modelId=self.model_id,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4096,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            })
-        )
-
-        result = json.loads(response['body'].read())
-        extracted_text = result['content'][0]['text']
-
-        # JSON解析してCalendarEventに変換
-        events_data = json.loads(extracted_text)
-        return [CalendarEvent(**event) for event in events_data]
-
-    async def extract_events_from_image(self, image_bytes: bytes) -> list[CalendarEvent]:
-        """
-        画像から直接イベント抽出
-
-        Args:
-            image_bytes: 画像バイナリ
-
-        Returns:
-            CalendarEventのリスト
-        """
-        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-
-        prompt = self._build_extraction_prompt("")
-
-        response = self.client.invoke_model(
-            modelId=self.model_id,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4096,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": image_base64
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ]
-            })
-        )
-
-        result = json.loads(response['body'].read())
-        extracted_text = result['content'][0]['text']
-
-        # JSON解析してCalendarEventに変換
-        events_data = json.loads(extracted_text)
-        return [CalendarEvent(**event) for event in events_data]
-
-    def _build_extraction_prompt(self, text: str) -> str:
-        """イベント抽出プロンプト構築"""
-        return f"""
-この画像/テキストからカレンダーイベント情報を抽出してください。
-
-【抽出対象】
-- イベント名（summary）
-- 開始日時（start.dateTime または start.date）
-- 終了日時（end.dateTime または end.date）
-- 場所（location）
-- 説明（description）
-- 支払い期限がある場合は別イベントとして追加
-
-【出力形式】JSON配列
-[
-  {{
-    "summary": "イベント名",
-    "start": {{
-      "dateTime": "2025-01-15T18:30:00+09:00",
-      "timeZone": "Asia/Tokyo"
-    }},
-    "end": {{
-      "dateTime": "2025-01-15T21:00:00+09:00",
-      "timeZone": "Asia/Tokyo"
-    }},
-    "location": "場所",
-    "description": "説明"
-  }}
-]
-
-テキスト:
-{text if text else "(画像から抽出)"}
-"""
-```
-
----
-
-### 3.6 データモデル
-
-#### schemas_line_webhook_post.py
-
-```python
-from pydantic import BaseModel, Field
-from typing import Literal
-
-class LineSource(BaseModel):
-    """LINEメッセージソース"""
-    type: Literal["user", "group", "room"]
-    user_id: str = Field(alias="userId")
-
-class LineMessage(BaseModel):
-    """LINEメッセージ"""
-    type: Literal["text", "image"]
-    id: str
-    text: str | None = None
-
-class LineMessageEvent(BaseModel):
-    """LINEメッセージイベント"""
-    type: Literal["message"]
-    message: LineMessage
-    timestamp: int
-    source: LineSource
-    reply_token: str = Field(alias="replyToken")
-
-class LineWebhookRequest(BaseModel):
-    """LINE Webhook リクエスト"""
-    destination: str
-    events: list[LineMessageEvent]
-
-class LineWebhookResponse(BaseModel):
-    """LINE Webhook レスポンス（空）"""
-    pass
-```
-
----
-
-### 3.7 Step Functions State Machine定義
-
-#### infra/sam/statemachine/line_webhook_workflow.asl.json
-
-Amazon States Language（ASL）でState Machineを定義。
+**トリガー:** EventBridge Rule（`source: aws.s3`, `detail-type: Object Created`）
 
 ```json
 {
-  "Comment": "LINE Webhook処理ワークフロー",
-  "StartAt": "DetermineMessageType",
+  "Comment": "Mail processing pipeline",
+  "StartAt": "ParseMail",
   "States": {
-    "DetermineMessageType": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.event.message.type",
-          "StringEquals": "text",
-          "Next": "ExtractEventsFromText"
-        },
-        {
-          "Variable": "$.event.message.type",
-          "StringEquals": "image",
-          "Next": "DownloadImage"
-        }
-      ],
-      "Default": "UnsupportedMessageType"
-    },
-    "ExtractEventsFromText": {
+    "ParseMail": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::http:invoke",
       "Parameters": {
-        "FunctionName": "${LambdaFunctionArn}",
-        "Payload": {
-          "body": {
-            "text": "$.event.message.text"
-          },
-          "path": "/llm/extract-event",
-          "httpMethod": "POST"
-        }
+        "ApiEndpoint": "${ApiBaseUrl}/mail/parse",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody.$": "$.s3_event"
       },
-      "ResultPath": "$.extractedEvents",
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyError"
-        }
-      ],
-      "Next": "CreateCalendarEvents"
+      "ResultPath": "$.normalized_mail",
+      "Next": "ExtractEvents"
     },
-    "DownloadImage": {
+    "ExtractEvents": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::http:invoke",
       "Parameters": {
-        "FunctionName": "${LambdaFunctionArn}",
-        "Payload": {
-          "body": {
-            "message_id": "$.event.message.id"
-          },
-          "path": "/line/download-image",
-          "httpMethod": "POST"
-        }
+        "ApiEndpoint": "${ApiBaseUrl}/llm/extract-event",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody.$": "$.normalized_mail"
       },
-      "ResultPath": "$.imageData",
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 2,
-          "BackoffRate": 2
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyError"
-        }
-      ],
-      "Next": "ExtractEventsFromImage"
-    },
-    "ExtractEventsFromImage": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${LambdaFunctionArn}",
-        "Payload": {
-          "body": {
-            "image_bytes": "$.imageData.Payload.body.image_bytes"
-          },
-          "path": "/vision/extract-events",
-          "httpMethod": "POST"
-        }
-      },
-      "ResultPath": "$.extractedEvents",
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 5,
-          "BackoffRate": 2
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyError"
-        }
-      ],
+      "ResultPath": "$.events",
       "Next": "CreateCalendarEvents"
     },
     "CreateCalendarEvents": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::http:invoke",
       "Parameters": {
-        "FunctionName": "${LambdaFunctionArn}",
-        "Payload": {
-          "body": {
-            "events": "$.extractedEvents.Payload.body.events"
-          },
-          "path": "/calendar/events",
-          "httpMethod": "POST"
+        "ApiEndpoint": "${ApiBaseUrl}/calendar/events",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody.$": "$.events"
+      },
+      "ResultPath": "$.results",
+      "Next": "NotifyLine"
+    },
+    "NotifyLine": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::http:invoke",
+      "Parameters": {
+        "ApiEndpoint": "${ApiBaseUrl}/line/notify",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody.$": "$.results"
+      },
+      "End": true
+    }
+  }
+}
+```
+
+### 4.2 LINE State Machine
+
+**トリガー:** EventBridge Rule（`source: calendar-auto-register.line`）
+
+```json
+{
+  "Comment": "LINE message processing pipeline",
+  "StartAt": "CheckMessageType",
+  "States": {
+    "CheckMessageType": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.detail.message_type",
+          "StringEquals": "text",
+          "Next": "ExtractFromText"
+        },
+        {
+          "Variable": "$.detail.message_type",
+          "StringEquals": "image",
+          "Next": "ExtractFromImage"
+        }
+      ],
+      "Default": "Unsupported"
+    },
+    "ExtractFromText": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::http:invoke",
+      "Parameters": {
+        "ApiEndpoint": "${ApiBaseUrl}/llm/extract-event",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody": {
+          "text.$": "$.detail.text"
         }
       },
-      "ResultPath": "$.calendarResults",
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyError"
-        }
-      ],
-      "Next": "NotifySuccess"
+      "ResultPath": "$.events",
+      "Next": "CreateCalendarEvents"
     },
-    "NotifySuccess": {
+    "ExtractFromImage": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::http:invoke",
       "Parameters": {
-        "FunctionName": "${LambdaFunctionArn}",
-        "Payload": {
-          "body": {
-            "results": "$.calendarResults.Payload.body.results"
-          },
-          "path": "/line/notify",
-          "httpMethod": "POST"
+        "ApiEndpoint": "${ApiBaseUrl}/llm/extract-event-image",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody": {
+          "message_id.$": "$.detail.message_id"
         }
+      },
+      "ResultPath": "$.events",
+      "Next": "CreateCalendarEvents"
+    },
+    "CreateCalendarEvents": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::http:invoke",
+      "Parameters": {
+        "ApiEndpoint": "${ApiBaseUrl}/calendar/events",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody.$": "$.events"
+      },
+      "ResultPath": "$.results",
+      "Next": "NotifyLine"
+    },
+    "NotifyLine": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::http:invoke",
+      "Parameters": {
+        "ApiEndpoint": "${ApiBaseUrl}/line/notify",
+        "Method": "POST",
+        "Headers": { "X-API-Key.$": "$.api_key" },
+        "RequestBody.$": "$.results"
       },
       "End": true
     },
-    "NotifyError": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${LambdaFunctionArn}",
-        "Payload": {
-          "body": {
-            "error_message": "$.Error"
-          },
-          "path": "/line/notify-error",
-          "httpMethod": "POST"
-        }
-      },
-      "End": true
-    },
-    "UnsupportedMessageType": {
-      "Type": "Succeed",
-      "Comment": "未対応のメッセージタイプ（スキップ）"
+    "Unsupported": {
+      "Type": "Succeed"
     }
   }
 }
@@ -722,266 +368,126 @@ Amazon States Language（ASL）でState Machineを定義。
 
 ---
 
-## 4. エラーハンドリング戦略
+## 5. 設計判断まとめ（D1〜D7 + 追加）
 
-### 4.1 段階的エラー対応
-
-1. **署名検証失敗**: 403 Forbiddenを返却、CloudWatch Logsに記録
-2. **LINE Content API失敗**: ユーザーに「画像取得に失敗しました」と通知
-3. **Vision LLM失敗**: 最大5回リトライ（エクスポネンシャルバックオフ）
-4. **Calendar API失敗**: 最大3回リトライ、失敗時はエラー詳細を通知
-5. **LINE通知失敗**: CloudWatch Logsに記録（ユーザー通知不可）
-
-### 4.2 リトライロジック
-
-```python
-import asyncio
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=2, max=60)
-)
-async def extract_events_with_retry(client, image_bytes):
-    """Vision LLM呼び出し（リトライ付き）"""
-    return await client.extract_events_from_image(image_bytes)
-```
+| ID | 決定 | 理由 |
+|---|---|---|
+| D1 | `CalendarEventModel(**e.model_dump())` 削除 | エイリアスなので変換不要 |
+| D2 | `send_line_notification()` 直接使用 | `build_line_message` + 手動 push の重複排除 |
+| D3 | `extract_events_from_raw_text()` 新設 | メール前処理（Unsubscribe 削除等）を LINE テキストに適用しない |
+| D4 | `normalize_event_to_half_width()` を画像パスにも適用 | テキストパスとの一貫性 |
+| D5 | 画像 LLM に `@retry` (tenacity, 5回) | テキストパスの LangChain retry と同一ポリシー |
+| D6 | `allowlist_line_user_ids` による 2 層防御 | `allowlist_senders`（メール）と対称的な設計 |
+| D7 | `_run_extraction_chain()` で LangChain チェーン共通化 | メール・LINE テキストで同一チェーンを共有 |
+| D8 | SFN = オーケストレーター、EvB = トリガー | Python 関数直接呼び出しによるオーケストレーションを排除。各ステップが独立した HTTP API として存在することで単体テスト・再実行が容易 |
+| D9 | `POST /llm/extract-event` をテキスト/メール共通化 | `text` 必須、メールコンテキストは任意。LINE テキスト・メールで分岐 |
+| D10 | `POST /line/webhook` は EvB.putEvents のみ | LINE の 5 秒応答制約を解決。LLM/Calendar/通知は SFN が非同期で処理 |
+| D11 | 2 つの SM（Mail SM / LINE SM）を別々に定義 | 入力スキーマが根本的に異なる。フローが独立して読みやすい |
 
 ---
 
-## 5. テスト戦略
+## 6. インフラ設計
 
-### 5.1 単体テスト（pytest）
-
-**対象**:
-- `verify_line_signature()` - 署名検証ロジック
-- `LineContentClient.get_message_content()` - モックレスポンス
-- `BedrockVisionClient.extract_events_from_text()` - モックレスポンス
-- `BedrockVisionClient.extract_events_from_image()` - モックレスポンス
-
-**ツール**:
-- `pytest`
-- `pytest-asyncio`
-- `pytest-mock`
-- `httpx.AsyncClient` モック
-
-### 5.2 統合テスト
-
-**シナリオ**:
-1. テキストメッセージ → カレンダー登録 → 通知
-2. 画像メッセージ → Vision LLM → カレンダー登録 → 通知
-3. 署名検証失敗 → 403 Forbidden
-4. Vision LLM失敗 → エラー通知
-
-### 5.3 品質保証
-
-- テストカバレッジ: **≥80%**
-- mypy strict mode: **エラーゼロ**
-- ruff: **エラーゼロ**
-
----
-
-## 6. インフラ設定
-
-### 6.1 API Gateway設定
-
-**新規パス**: `POST /line/webhook`
-
-**認証**: なし（署名検証をアプリケーション層で実施）
-
-**タイムアウト**: 29秒（API Gatewayの制限）
-
-### 6.2 IAM ポリシー追加
-
-Lambda実行ロールに以下を追加：
+### 6.1 新規追加リソース（SAM）
 
 ```yaml
-Policies:
-  - Statement:
-      - Effect: Allow
-        Action:
-          - bedrock:InvokeModel
-        Resource:
-          - arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-*
-  - Statement:
-      - Effect: Allow
-        Action:
-          - states:StartExecution
-        Resource:
-          - !GetAtt LineWebhookStateMachine.Arn
-```
+# EventBridge Rule: S3 → Mail SM
+MailEventRule:
+  Type: AWS::Events::Rule
+  Properties:
+    EventPattern:
+      source: ["aws.s3"]
+      detail-type: ["Object Created"]
+      detail:
+        bucket:
+          name: [!Ref S3RawMailBucketName]
+    Targets:
+      - Arn: !GetAtt MailStateMachine.Arn
+        RoleArn: !GetAtt EventBridgeRole.Arn
 
-### 6.3 Step Functions設定
+# EventBridge Rule: LINE Webhook → LINE SM
+LineEventRule:
+  Type: AWS::Events::Rule
+  Properties:
+    EventPattern:
+      source: ["calendar-auto-register.line"]
+    Targets:
+      - Arn: !GetAtt LineStateMachine.Arn
+        RoleArn: !GetAtt EventBridgeRole.Arn
 
-#### SAM template.yaml
-
-```yaml
-LineWebhookStateMachine:
+# Mail State Machine
+MailStateMachine:
   Type: AWS::Serverless::StateMachine
   Properties:
-    Name: LineWebhookWorkflow
-    DefinitionUri: statemachine/line_webhook_workflow.asl.json
-    DefinitionSubstitutions:
-      LambdaFunctionArn: !GetAtt CalendarAutoRegisterFunction.Arn
-    Role: !GetAtt StepFunctionsRole.Arn
-    Logging:
-      Level: ALL
-      IncludeExecutionData: true
-      Destinations:
-        - CloudWatchLogsLogGroup:
-            LogGroupArn: !GetAtt LineWebhookWorkflowLogGroup.Arn
-    Tracing:
-      Enabled: true
-
-StepFunctionsRole:
-  Type: AWS::IAM::Role
-  Properties:
-    AssumeRolePolicyDocument:
-      Version: "2012-10-17"
-      Statement:
-        - Effect: Allow
-          Principal:
-            Service: states.amazonaws.com
-          Action: sts:AssumeRole
+    Definition: ...  # 4.1 の ASL
     Policies:
-      - PolicyName: StepFunctionsExecutionPolicy
-        PolicyDocument:
-          Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource:
-                - !GetAtt CalendarAutoRegisterFunction.Arn
-            - Effect: Allow
-              Action:
-                - logs:CreateLogDelivery
-                - logs:GetLogDelivery
-                - logs:UpdateLogDelivery
-                - logs:DeleteLogDelivery
-                - logs:ListLogDeliveries
-                - logs:PutResourcePolicy
-                - logs:DescribeResourcePolicies
-                - logs:DescribeLogGroups
-              Resource: "*"
-            - Effect: Allow
-              Action:
-                - xray:PutTraceSegments
-                - xray:PutTelemetryRecords
-              Resource: "*"
+      - Statement:
+          Effect: Allow
+          Action: states:InvokeHTTPEndpoint
+          Resource: "*"
 
-LineWebhookWorkflowLogGroup:
-  Type: AWS::Logs::LogGroup
+# LINE State Machine
+LineStateMachine:
+  Type: AWS::Serverless::StateMachine
   Properties:
-    LogGroupName: /aws/vendedlogs/states/LineWebhookWorkflow
-    RetentionInDays: 7
+    Definition: ...  # 4.2 の ASL
+    Policies:
+      - Statement:
+          Effect: Allow
+          Action: states:InvokeHTTPEndpoint
+          Resource: "*"
 ```
 
-### 6.4 環境変数
+### 6.2 Lambda IAM 追加
 
-| 変数名 | 説明 |
-|---|---|
-| `LINE_CHANNEL_SECRET` | Webhook署名検証用 |
-| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Content API用 |
-| `BEDROCK_VISION_MODEL_ID` | `anthropic.claude-3-haiku-20240307-v1:0` |
-| `LINE_WEBHOOK_STATE_MACHINE_ARN` | Step Functions State Machine ARN（SAMで自動設定） |
-| `AWS_REGION` | AWSリージョン（例: `ap-northeast-1`） |
+```yaml
+# Lambda が EventBridge に putEvents できるよう追加
+- Statement:
+    Effect: Allow
+    Action: "events:PutEvents"
+    Resource: "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
 
----
+# Bedrock: Vision モデル追加
+- Statement:
+    Effect: Allow
+    Action: "bedrock:InvokeModel"
+    Resource:
+      - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+      - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-*"
+```
 
-## 7. パフォーマンス目標
+### 6.3 環境変数（SSM dotenv 追記）
 
-| メトリクス | 目標値 |
-|---|---|
-| Webhook応答時間 | 5秒以内 |
-| テキストメッセージ処理 | 平均10秒 |
-| 画像メッセージ処理 | 平均20秒 |
-| Lambda実行時間 | 120秒以内 |
-| Vision LLM呼び出し | 5秒以内 |
-
----
-
-## 8. コスト試算
-
-**月間想定**（個人利用）:
-- Lambda実行: 200回/月 × 20秒 = 4,000秒
-- **Step Functions**: 200実行/月 × 4ステップ = 800ステートトランジション
-- Bedrock Vision (Haiku): 100回/月
-- Bedrock LLM (Haiku): 100回/月
-- Google Calendar API: 200回/月（無料枠）
-- LINE Messaging API: 200通/月（無料枠）
-
-**推定コスト**:
-- Lambda: ~$0.50
-- Step Functions: ~$0.02（最初の4,000ステートトランジションは無料枠）
-- Bedrock Vision (Haiku): ~$0.40
-- Bedrock LLM (Haiku): ~$0.25
-- **合計: $1-2/月**
-
----
-
-## 9. 監視・運用
-
-### 9.1 CloudWatch メトリクス
-
-| メトリクス | 閾値 | アラート |
+| 変数名 | 説明 | 区分 |
 |---|---|---|
-| Lambda エラー率 | 5%以上 | CloudWatch Alarm |
-| Webhook署名検証失敗 | 10件/時間 | CloudWatch Alarm |
-| Vision LLM失敗率 | 10%以上 | CloudWatch Alarm |
-
-### 9.2 ログ出力
-
-- リクエストID付きトレーシング
-- エラースタックトレース
-- Vision LLM抽出結果
-- Calendar API レスポンス
+| `LINE_CHANNEL_SECRET` | Layer 1: HMAC-SHA256 署名検証 | **追加** |
+| `ALLOWLIST_LINE_USER_IDS` | Layer 2: 許可 userId リスト（JSON 配列）| **追加** |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Push / Content API | 既存 |
+| `LINE_USER_ID` | LINE 通知先 | 既存 |
+| `BEDROCK_MODEL_ID` | テキスト + 画像兼用モデル ID | 既存 |
+| `API_KEY` | SFN → API GW 認証 | 既存（要 SFN 側設定） |
 
 ---
 
-## 10. デプロイ計画
+## 7. テスト戦略
 
-### 10.1 段階的リリース
+### 7.1 単体テスト（モック使用）
 
-**Phase 1**: テキストメッセージ対応
-- Webhook受信
-- 署名検証
-- Vision LLM統合
-- 既存フローとの統合
+| テスト対象 | 確認内容 |
+|---|---|
+| `verify_line_signature()` | 正常/不正署名 |
+| `process_webhook()` | userId check + putEvents 呼び出し |
+| `POST /line/webhook` router | 署名 NG→403、secret 未設定→500、正常→200 |
+| `POST /llm/extract-event` | text のみ→raw text パス、mail フィールドあり→mail パス |
+| `POST /llm/extract-event-image` | message_id → LINE DL → Bedrock → events |
 
-**Phase 2**: 画像メッセージ対応
-- LINE Content API統合
-- Vision LLM画像処理
+### 7.2 統合テスト（FastAPI TestClient）
 
-**Phase 3**: 最適化
-- パフォーマンスチューニング
-- エラーハンドリング改善
-
----
-
-## 11. 技術的制約
-
-### 11.1 LINE Messaging API
-
-- Webhook応答タイムアウト: **5秒**
-- Content API画像保持期間: **数日間**
-- 画像サイズ上限: **10MB**
-
-### 11.2 Bedrock Vision
-
-- 画像サイズ上限: **5MB**
-- サポート形式: JPEG, PNG, GIF, WebP
-- 最大トークン: 4096
-
-### 11.3 API Gateway
-
-- タイムアウト: **29秒**
-- ペイロードサイズ: **10MB**
-
----
-
-## 12. 参考資料
-
-- [LINE Messaging API](https://developers.line.biz/ja/reference/messaging-api/)
-- [AWS Bedrock Claude 3](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html)
-- [Google Calendar API](https://developers.google.com/calendar/api/v3/reference)
+| シナリオ | 期待結果 |
+|---|---|
+| 正常テキスト Webhook | 200 OK + putEvents 呼び出し |
+| 正常画像 Webhook | 200 OK + putEvents 呼び出し |
+| 署名検証失敗 | 403 |
+| 未認可 userId | 200 OK（putEvents されない）|
+| events 空配列 | 200 OK |
+| LINE_CHANNEL_SECRET 未設定 | 500 |
