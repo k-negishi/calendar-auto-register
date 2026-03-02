@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  calendar-auto-register: Lambda (container) + Private IAM-protected API Gateway.
+  calendar-auto-register: Lambda (container) + API Gateway + Step Functions + EventBridge.
 
 Parameters:
   ProjectName:
@@ -17,8 +17,8 @@ Parameters:
     Description: Full SSM Parameter Store path storing the prod dotenv content.
   S3RawMailBucketName:
     Type: String
-    Default: calendar-auto-register
-    Description: S3 bucket that stores RAW `.eml` files (used for IAM policy).
+    Default: calendar-auto-register-raw-mail
+    Description: S3 bucket that stores RAW `.eml` files (used for IAM policy and EventBridge rule).
 
 Globals:
   Function:
@@ -27,6 +27,11 @@ Globals:
     Tracing: Active
 
 Resources:
+
+  # =========================================================
+  # Lambda (Lambdalith: FastAPI + Mangum)
+  # =========================================================
+
   CalendarFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -49,7 +54,9 @@ Resources:
             Effect: Allow
             Action:
               - "bedrock:InvokeModel"
-            Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+            Resource:
+              # テキスト抽出モデル（メール・LINE テキスト共通）
+              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
         - Statement:
             Effect: Allow
             Action:
@@ -60,6 +67,11 @@ Resources:
             Effect: Allow
             Action: "s3:ListBucket"
             Resource: !Sub "arn:aws:s3:::${S3RawMailBucketName}"
+        # LINE Webhook: EventBridge にイベントを発行するための権限 [D10]
+        - Statement:
+            Effect: Allow
+            Action: "events:PutEvents"
+            Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
       Events:
         ApiRoot:
           Type: Api
@@ -80,6 +92,10 @@ Resources:
       DockerBuildArgs:
         APP_ENV: prod
 
+  # =========================================================
+  # API Gateway (REST API)
+  # =========================================================
+
   CalendarApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -93,6 +109,305 @@ Resources:
           HttpMethod: "*"
           LoggingLevel: ERROR
           MetricsEnabled: false
+
+  # =========================================================
+  # IAM Roles
+  # =========================================================
+
+  # Step Functions 実行ロール（Mail SM / LINE SM 共通）
+  # apigateway:invoke + AuthType: IAM_ROLE で API Gateway を呼ぶ
+  SfnExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-sfn-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeApiGateway
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # API Gateway のすべての POST エンドポイントへの呼び出し権限
+              - Effect: Allow
+                Action: execute-api:Invoke
+                Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CalendarApi}/default/POST/*"
+        - PolicyName: XRayTracing
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: "*"
+
+  # EventBridge → Step Functions 起動ロール（Mail SM / LINE SM 共通）
+  EvbToSfnRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-evb-to-sfn-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartStateMachines
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource:
+                  - !Ref MailStateMachine
+                  - !Ref LineStateMachine
+
+  # =========================================================
+  # Step Functions: Mail State Machine
+  # =========================================================
+  # フロー: S3 → EvB → Mail SM → /mail/parse → /llm/extract-event → /calendar/events → /line/notify
+  # =========================================================
+
+  MailStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${ProjectName}-mail-sm"
+      Type: STANDARD
+      Role: !GetAtt SfnExecutionRole.Arn
+      Tracing:
+        Enabled: true
+      # DefinitionSubstitutions で API エンドポイントを CloudFormation から動的生成
+      # → API ID をコードにハードコードしない
+      DefinitionSubstitutions:
+        ApiEndpoint: !Sub "${CalendarApi}.execute-api.${AWS::Region}.amazonaws.com"
+      Definition:
+        Comment: "calendar-auto-register: mail processing pipeline"
+        StartAt: MailParseApi
+        States:
+          MailParseApi:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/mail/parse"
+              AuthType: IAM_ROLE
+              RequestBody:
+                "s3_key.$": "$.s3_key"
+            ResultPath: "$.mail_parse"
+            Next: LlmExtractEventApi
+
+          LlmExtractEventApi:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/llm/extract-event"
+              AuthType: IAM_ROLE
+              # [D9] 新フラットスキーマ: normalized_mail フィールドを展開して送信
+              # text が null（HTML のみメール）でも from_addr 等があればメールパスで処理される
+              RequestBody:
+                "text.$": "$.mail_parse.ResponseBody.normalized_mail.text"
+                "html.$": "$.mail_parse.ResponseBody.normalized_mail.html"
+                "from_addr.$": "$.mail_parse.ResponseBody.normalized_mail.from_addr"
+                "reply_to.$": "$.mail_parse.ResponseBody.normalized_mail.reply_to"
+                "subject.$": "$.mail_parse.ResponseBody.normalized_mail.subject"
+                "received_at.$": "$.mail_parse.ResponseBody.normalized_mail.received_at"
+            ResultPath: "$.llm_extract_event"
+            Next: CalendarEventsApi
+
+          CalendarEventsApi:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/calendar/events"
+              AuthType: IAM_ROLE
+              RequestBody:
+                "events.$": "$.llm_extract_event.ResponseBody.events"
+            ResultPath: "$.calendar_events"
+            Retry:
+              - ErrorEquals:
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
+            Next: LineNotifyApi
+
+          LineNotifyApi:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/line/notify"
+              AuthType: IAM_ROLE
+              "RequestBody.$": "$.calendar_events.ResponseBody"
+            End: true
+
+  # =========================================================
+  # Step Functions: LINE State Machine
+  # =========================================================
+  # フロー: LINE Webhook → EvB → LINE SM → Choice(text/image) → /llm/extract-event or /llm/extract-event-image
+  #          → /calendar/events → /line/notify
+  # =========================================================
+
+  LineStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${ProjectName}-line-sm"
+      Type: STANDARD
+      Role: !GetAtt SfnExecutionRole.Arn
+      Tracing:
+        Enabled: true
+      DefinitionSubstitutions:
+        ApiEndpoint: !Sub "${CalendarApi}.execute-api.${AWS::Region}.amazonaws.com"
+      Definition:
+        Comment: "calendar-auto-register: LINE message processing pipeline"
+        StartAt: CheckMessageType
+        States:
+          CheckMessageType:
+            Type: Choice
+            Choices:
+              - Variable: "$.detail.message_type"
+                StringEquals: text
+                Next: ExtractFromText
+              - Variable: "$.detail.message_type"
+                StringEquals: image
+                Next: ExtractFromImage
+            Default: Unsupported
+
+          ExtractFromText:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/llm/extract-event"
+              AuthType: IAM_ROLE
+              RequestBody:
+                "text.$": "$.detail.text"
+            ResultPath: "$.llm_extract"
+            Next: CalendarEventsApi
+
+          ExtractFromImage:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/llm/extract-event-image"
+              AuthType: IAM_ROLE
+              RequestBody:
+                "message_id.$": "$.detail.message_id"
+            ResultPath: "$.llm_extract"
+            Next: CalendarEventsApi
+
+          CalendarEventsApi:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/calendar/events"
+              AuthType: IAM_ROLE
+              RequestBody:
+                "events.$": "$.llm_extract.ResponseBody.events"
+            ResultPath: "$.calendar_events"
+            Retry:
+              - ErrorEquals:
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
+            Next: LineNotifyApi
+
+          LineNotifyApi:
+            Type: Task
+            Resource: "arn:aws:states:::apigateway:invoke"
+            Parameters:
+              ApiEndpoint: "${ApiEndpoint}"
+              Method: POST
+              Stage: default
+              Path: "/line/notify"
+              AuthType: IAM_ROLE
+              "RequestBody.$": "$.calendar_events.ResponseBody"
+            End: true
+
+          Unsupported:
+            Type: Succeed
+            Comment: "sticker 等の未対応メッセージタイプは何もしない"
+
+  # =========================================================
+  # EventBridge Rules
+  # =========================================================
+
+  # S3 Object Created → Mail State Machine
+  MailEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-mail-sm"
+      Description: "S3 に RAW メールが保存されたら Mail State Machine を起動する"
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref S3RawMailBucketName
+      State: ENABLED
+      Targets:
+        - Id: MailStateMachineTarget
+          Arn: !Ref MailStateMachine
+          RoleArn: !GetAtt EvbToSfnRole.Arn
+          InputTransformer:
+            InputPathsMap:
+              key: "$.detail.object.key"
+              bucket: "$.detail.bucket.name"
+            # SFN に渡す入力: Mail SM の StartAt ステートが受け取る形式
+            InputTemplate: |
+              {
+                "s3_key": "<key>",
+                "bucket": "<bucket>"
+              }
+
+  # LINE Webhook → LINE State Machine
+  LineEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-line-sm"
+      Description: "LINE Webhook から発行されたイベントで LINE State Machine を起動する"
+      EventPattern:
+        source:
+          - calendar-auto-register.line
+      State: ENABLED
+      Targets:
+        - Id: LineStateMachineTarget
+          Arn: !Ref LineStateMachine
+          RoleArn: !GetAtt EvbToSfnRole.Arn
+          # InputTransformer なし: process_webhook が putEvents した Detail をそのまま SFN に渡す
+          # Detail: {"message_type": "text"|"image", "message_id": "...", "text": "...", "user_id": "..."}
+
 Outputs:
   CalendarFunctionArn:
     Description: Lambda function ARN
@@ -100,3 +415,9 @@ Outputs:
   CalendarApiEndpoint:
     Description: Invoke URL for the API Gateway stage
     Value: !Sub "https://${CalendarApi}.execute-api.${AWS::Region}.amazonaws.com/default/"
+  MailStateMachineArn:
+    Description: Mail State Machine ARN
+    Value: !Ref MailStateMachine
+  LineStateMachineArn:
+    Description: LINE State Machine ARN
+    Value: !Ref LineStateMachine
