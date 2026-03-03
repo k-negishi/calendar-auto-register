@@ -336,7 +336,7 @@ def extract_events_from_image(
     from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
     from calendar_auto_register.clients import bedrock_client, line_client
-    from calendar_auto_register.core.prompts import CALENDAR_EVENT_EXTRACTION_SYSTEM
+    from calendar_auto_register.core.prompts import build_image_extraction_prompt
 
     if not settings.line_channel_access_token:
         raise ValueError("LINE_CHANNEL_ACCESS_TOKEN が未設定です")
@@ -361,7 +361,7 @@ def extract_events_from_image(
             region=settings.region,
             model_id=settings.bedrock_model_id,  # type: ignore[arg-type]
             image_bytes=image_bytes,
-            prompt=CALENDAR_EVENT_EXTRACTION_SYSTEM,
+            prompt=build_image_extraction_prompt(),
         )
         events = _parse_image_llm_response(response)
         # [D4] テキストパスと同一の正規化を適用

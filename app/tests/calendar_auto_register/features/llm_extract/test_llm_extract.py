@@ -658,6 +658,42 @@ def test_extract_event_image_LINE_API失敗_500エラー() -> None:
     assert res.status_code == 500
 
 
+def test_extract_event_image_プロンプトに本日日付が含まれる() -> None:
+    """画像パスで Bedrock に渡されるプロンプトに本日の日付が含まれることを確認する。"""
+    import os
+    os.environ["LINE_CHANNEL_ACCESS_TOKEN"] = "dummy_token"
+    os.environ["BEDROCK_MODEL_ID"] = "test-model"
+    from calendar_auto_register.core.settings import load_settings
+    load_settings.cache_clear()
+
+    image_bytes = b"\xff\xd8\xff"
+    captured_prompts: list[str] = []
+
+    def fake_invoke(
+        *,
+        region: str,
+        model_id: str,
+        image_bytes: bytes,
+        prompt: str,
+    ) -> dict[str, object]:
+        captured_prompts.append(prompt)
+        return {"content": [{"type": "text", "text": '{"events": []}'}]}
+
+    with patch(
+        "calendar_auto_register.clients.line_client.get_message_content",
+        return_value=image_bytes,
+    ), patch(
+        "calendar_auto_register.clients.bedrock_client.invoke_model_with_image",
+        side_effect=fake_invoke,
+    ):
+        client = TestClient(create_app())
+        res = client.post("/llm/extract-event-image", json={"message_id": "img-002"})
+
+    assert res.status_code == 200
+    assert len(captured_prompts) == 1
+    assert "本日の日付:" in captured_prompts[0]
+
+
 def test_extract_event_image_正常系() -> None:
     """[Phase 8] 正常な画像から予定を抽出できることを確認する。"""
     import os
