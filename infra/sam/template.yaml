@@ -44,7 +44,7 @@ Resources:
         Variables:
           APP_ENV: prod
           SSM_DOTENV_PARAMETER: !Ref SsmDotenvParameter
-          LINE_SM_ARN: !Ref LineStateMachine
+          LINE_SM_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ProjectName}-line-sm"
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:
@@ -74,7 +74,7 @@ Resources:
         - Statement:
             Effect: Allow
             Action: "states:StartExecution"
-            Resource: !Ref LineStateMachine
+            Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ProjectName}-line-sm"
       Events:
         ApiRoot:
           Type: Api
