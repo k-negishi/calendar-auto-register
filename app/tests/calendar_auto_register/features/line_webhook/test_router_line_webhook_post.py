@@ -1,7 +1,7 @@
 """LINE Webhook ルーターのテスト（unit + integration）。
 
-[D10] usecase が EvB.putEvents のみになったため、
-E2E テストは boto3.client().put_events をモックして検証する。
+[D10] usecase が SFN.start_execution のみになったため、
+E2E テストは boto3.client().start_execution をモックして検証する。
 """
 
 from __future__ import annotations
@@ -178,18 +178,21 @@ def test_正常署名_process_webhookが呼ばれる() -> None:
     mock_process.assert_called_once()
 
 
-# ===== E2E 統合テスト（D10: usecase は putEvents のみ） =====
+_LINE_SM_ARN = "arn:aws:states:ap-northeast-1:123456789012:stateMachine:calendar-auto-register-line-sm"
+
+# ===== E2E 統合テスト（D10: usecase は start_execution のみ） =====
 
 def test_E2E_テキストメッセージ完全フロー() -> None:
-    """テキストメッセージの完全フロー: Webhook → putEvents → 200。
+    """テキストメッセージの完全フロー: Webhook → start_execution → 200。
 
-    [D10] usecase は EventBridge.putEvents のみを実行する。
+    [D10] usecase は SFN.start_execution のみを実行する。
     LLM/Calendar/通知は SFN が非同期で処理する。
     """
     import os
     secret = "test_channel_secret"
     os.environ["LINE_CHANNEL_SECRET"] = secret
-    os.environ.pop("ALLOWLIST_LINE_USER_IDS", None)  # CI環境の残留値をクリア
+    os.environ["LINE_SM_ARN"] = _LINE_SM_ARN
+    os.environ.pop("ALLOWLIST_LINE_USER_IDS", None)
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
@@ -197,8 +200,8 @@ def test_E2E_テキストメッセージ完全フロー() -> None:
     body = json.dumps(payload).encode("utf-8")
     signature = _make_signature(body, secret)
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         client = TestClient(create_app())
         res = client.post(
             "/line/webhook",
@@ -210,18 +213,19 @@ def test_E2E_テキストメッセージ完全フロー() -> None:
         )
 
     assert res.status_code == 200
-    mock_events_client.put_events.assert_called_once()
-    entries = mock_events_client.put_events.call_args.kwargs["Entries"]
-    detail = json.loads(entries[0]["Detail"])
+    mock_sfn.start_execution.assert_called_once()
+    kwargs = mock_sfn.start_execution.call_args.kwargs
+    detail = json.loads(kwargs["input"])["detail"]
     assert detail["message_type"] == "text"
 
 
-def test_E2E_画像メッセージ_putEventsが呼ばれる() -> None:
-    """画像メッセージの完全フロー: Webhook → putEvents → 200。"""
+def test_E2E_画像メッセージ_start_executionが呼ばれる() -> None:
+    """画像メッセージの完全フロー: Webhook → start_execution → 200。"""
     import os
     secret = "test_channel_secret"
     os.environ["LINE_CHANNEL_SECRET"] = secret
-    os.environ.pop("ALLOWLIST_LINE_USER_IDS", None)  # CI環境の残留値をクリア
+    os.environ["LINE_SM_ARN"] = _LINE_SM_ARN
+    os.environ.pop("ALLOWLIST_LINE_USER_IDS", None)
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
@@ -229,8 +233,8 @@ def test_E2E_画像メッセージ_putEventsが呼ばれる() -> None:
     body = json.dumps(payload).encode("utf-8")
     signature = _make_signature(body, secret)
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         client = TestClient(create_app())
         res = client.post(
             "/line/webhook",
@@ -242,19 +246,21 @@ def test_E2E_画像メッセージ_putEventsが呼ばれる() -> None:
         )
 
     assert res.status_code == 200
-    mock_events_client.put_events.assert_called_once()
-    entries = mock_events_client.put_events.call_args.kwargs["Entries"]
-    detail = json.loads(entries[0]["Detail"])
+    mock_sfn.start_execution.assert_called_once()
+    kwargs = mock_sfn.start_execution.call_args.kwargs
+    assert kwargs["name"] == "img-123"
+    detail = json.loads(kwargs["input"])["detail"]
     assert detail["message_type"] == "image"
     assert detail["message_id"] == "img-123"
 
 
-def test_E2E_未認可userId_200でputEventsなし() -> None:
-    """[D6] 未認可 userId → 200 OK（putEvents が呼ばれない）。"""
+def test_E2E_未認可userId_200でstart_executionなし() -> None:
+    """[D6] 未認可 userId → 200 OK（start_execution が呼ばれない）。"""
     import os
     import json as json_module
     secret = "test_channel_secret"
     os.environ["LINE_CHANNEL_SECRET"] = secret
+    os.environ["LINE_SM_ARN"] = _LINE_SM_ARN
     os.environ["ALLOWLIST_LINE_USER_IDS"] = json_module.dumps(["Uallowed"])
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
@@ -263,8 +269,8 @@ def test_E2E_未認可userId_200でputEventsなし() -> None:
     body = json.dumps(payload).encode("utf-8")
     signature = _make_signature(body, secret)
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         client = TestClient(create_app())
         res = client.post(
             "/line/webhook",
@@ -276,16 +282,17 @@ def test_E2E_未認可userId_200でputEventsなし() -> None:
         )
 
     assert res.status_code == 200
-    mock_events_client.put_events.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
 
     os.environ.pop("ALLOWLIST_LINE_USER_IDS", None)
 
 
-def test_E2E_空events_200でputEventsなし() -> None:
-    """events が空配列 → 200 OK（putEvents が呼ばれない）。"""
+def test_E2E_空events_200でstart_executionなし() -> None:
+    """events が空配列 → 200 OK（start_execution が呼ばれない）。"""
     import os
     secret = "test_channel_secret"
     os.environ["LINE_CHANNEL_SECRET"] = secret
+    os.environ["LINE_SM_ARN"] = _LINE_SM_ARN
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
@@ -293,8 +300,8 @@ def test_E2E_空events_200でputEventsなし() -> None:
     body = json.dumps(payload).encode("utf-8")
     signature = _make_signature(body, secret)
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         client = TestClient(create_app())
         res = client.post(
             "/line/webhook",
@@ -306,14 +313,15 @@ def test_E2E_空events_200でputEventsなし() -> None:
         )
 
     assert res.status_code == 200
-    mock_events_client.put_events.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
 
 
-def test_E2E_followイベント_200でputEventsなし() -> None:
-    """follow イベント → 200 OK（putEvents が呼ばれない）。"""
+def test_E2E_followイベント_200でstart_executionなし() -> None:
+    """follow イベント → 200 OK（start_execution が呼ばれない）。"""
     import os
     secret = "test_channel_secret"
     os.environ["LINE_CHANNEL_SECRET"] = secret
+    os.environ["LINE_SM_ARN"] = _LINE_SM_ARN
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
@@ -327,8 +335,8 @@ def test_E2E_followイベント_200でputEventsなし() -> None:
     body = json.dumps(payload).encode("utf-8")
     signature = _make_signature(body, secret)
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         client = TestClient(create_app())
         res = client.post(
             "/line/webhook",
@@ -340,23 +348,23 @@ def test_E2E_followイベント_200でputEventsなし() -> None:
         )
 
     assert res.status_code == 200
-    mock_events_client.put_events.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
 
 
 def test_E2E_署名失敗_403() -> None:
-    """[Layer 1] 署名失敗 → 403（putEvents が呼ばれない）。"""
+    """[Layer 1] 署名失敗 → 403（start_execution が呼ばれない）。"""
     import os
     os.environ["LINE_CHANNEL_SECRET"] = "correct_secret"
+    os.environ["LINE_SM_ARN"] = _LINE_SM_ARN
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
     payload = _webhook_payload(events=[_text_event()])
     body = json.dumps(payload).encode("utf-8")
-    # 間違ったシークレットで署名
     wrong_signature = _make_signature(body, "wrong_secret")
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         client = TestClient(create_app())
         res = client.post(
             "/line/webhook",
@@ -368,4 +376,4 @@ def test_E2E_署名失敗_403() -> None:
         )
 
     assert res.status_code == 403
-    mock_events_client.put_events.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
