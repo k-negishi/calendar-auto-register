@@ -45,7 +45,7 @@
 | `POST /llm/extract-event-image` | LINE 画像メッセージ（message_id）から Bedrock Vision でイベント抽出 |
 | `POST /calendar/events` | 抽出したイベントを Google カレンダーに一括登録 |
 | `POST /line/notify` | 登録結果を LINE Push で通知 |
-| `POST /line/webhook` | LINE Webhook 受信（HMAC 検証 + EventBridge putEvents のみ） |
+| `POST /line/webhook` | LINE Webhook 受信（HMAC 検証 + SFN 直接起動、message_id を実行名に使用） |
 
 ### アーキテクチャ図
 ![architecture.png](docs/architecture.png)
@@ -82,10 +82,7 @@ LINE User
     │ POST /line/webhook
     ▼
 API Gateway → Lambda（HMAC 検証 + userId 確認）
-    │ putEvents
-    ▼
-EventBridge（LINE Rule）
-    │ StartExecution
+    │ StartExecution(name=message_id)  ← message_id を実行名にして重複排除
     ▼
 Step Functions（LINE SM）
     │
@@ -97,7 +94,9 @@ Step Functions（LINE SM）
     └─ POST /line/notify            LINE に結果を通知
 ```
 
-> LINE Webhook は LINE Platform の 5 秒制約があるため、`POST /line/webhook` は EventBridge への `putEvents` のみ実施して即時 200 OK を返す。LLM 処理・カレンダー登録・通知は SFN が非同期で担う。
+> LINE Platform のコールドスタートによるリトライで同一メッセージが2回届くことがある。
+> `POST /line/webhook` は `message_id` を SFN 実行名として直接 `StartExecution` を呼ぶことで、
+> 2回目の呼び出しは `ExecutionAlreadyExists` となり自動排除される。
 
 ---
 
@@ -121,7 +120,7 @@ EventBridge（S3 Object Created）→ Mail SM 起動
 
 #### LINE SM（LINE メッセージ処理）
 
-EventBridge（LINE Webhook → putEvents）→ LINE SM 起動
+Lambda（`/line/webhook`）→ LINE SM 直接起動（`name=message_id`）
 
 ```
 [CheckMessageType]        message_type で分岐
@@ -134,7 +133,7 @@ EventBridge（LINE Webhook → putEvents）→ LINE SM 起動
          [POST /line/notify]       LINE に結果を通知
 ```
 
-※ LINE Webhook は LINE Platform の 5 秒制約を解決するため、`POST /line/webhook` は EventBridge への putEvents のみ実施し、即時 200 OK を返す。LLM 処理・カレンダー登録・通知はすべて SFN が非同期で処理する。
+※ LINE Webhook は `message_id` を SFN 実行名として直接 `StartExecution` を呼び、即時 200 OK を返す。LLM 処理・カレンダー登録・通知はすべて SFN が非同期で処理する。LINE Platform のリトライで同一 `message_id` が再送された場合は `ExecutionAlreadyExists` で自動排除される。
 
 ※この SFN を使ったオーケストレーション構成はあくまで検証のため本アプリケーションレベルだと過剰設計であり、単一の Lambda 関数で完結させるのが本来は望ましい。
 

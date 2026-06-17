@@ -1,15 +1,18 @@
 """LINE Webhook usecase のテスト。
 
-[D8, D10] usecase は EventBridge.putEvents のみを実行する。
+[D8, D10] usecase は SFN.start_execution のみを実行する。
 LLM/Calendar/通知は SFN が非同期でオーケストレートする。
+
+[Dedup] message_id を SFN 実行名に使うことで LINE リトライによる多重起動を防ぐ。
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from calendar_auto_register.core.settings import Settings
 
@@ -18,8 +21,8 @@ def _make_settings(
     *,
     allowlist_line_user_ids: list[str] | None = None,
     region: str = "ap-northeast-1",
+    line_sm_arn: str = "arn:aws:states:ap-northeast-1:123456789012:stateMachine:calendar-auto-register-line-sm",
 ) -> Settings:
-    """テスト用 Settings を生成するヘルパー。"""
     from calendar_auto_register.core.settings import load_settings
     load_settings.cache_clear()
 
@@ -31,6 +34,7 @@ def _make_settings(
     os.environ["S3_RAW_MAIL_BUCKET"] = "test-bucket"
     os.environ["BEDROCK_MODEL_ID"] = "test-model"
     os.environ["AWS_DEFAULT_REGION"] = region
+    os.environ["LINE_SM_ARN"] = line_sm_arn
     if allowlist_line_user_ids is not None:
         os.environ["ALLOWLIST_LINE_USER_IDS"] = json.dumps(allowlist_line_user_ids)
     else:
@@ -44,7 +48,6 @@ def _make_text_event(
     text: str = "明日10時に会議があります",
     message_id: str = "msg-001",
 ):
-    """テキストメッセージイベントを生成するヘルパー。"""
     from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
         LineMessage,
         LineSource,
@@ -63,7 +66,6 @@ def _make_image_event(
     user_id: str = "Uauthorized",
     message_id: str = "img-001",
 ):
-    """画像メッセージイベントを生成するヘルパー。"""
     from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
         LineMessage,
         LineSource,
@@ -79,7 +81,6 @@ def _make_image_event(
 
 
 def _make_sticker_event(user_id: str = "Uauthorized"):
-    """sticker メッセージイベントを生成するヘルパー。"""
     from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
         LineMessage,
         LineSource,
@@ -95,7 +96,6 @@ def _make_sticker_event(user_id: str = "Uauthorized"):
 
 
 def _make_follow_event(user_id: str = "Uauthorized"):
-    """follow イベントを生成するヘルパー。"""
     from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
         LineSource,
         LineWebhookEvent,
@@ -109,20 +109,20 @@ def _make_follow_event(user_id: str = "Uauthorized"):
 
 
 def _make_webhook_request(events: list):
-    """LineWebhookRequest を生成するヘルパー。"""
     from calendar_auto_register.features.line_webhook.schemas_line_webhook_post import (
         LineWebhookRequest,
     )
     return LineWebhookRequest(destination="Udestination", events=events)
 
 
-# ===== 失敗系テスト（先に書く: D6, D10） =====
+def _make_client_error(code: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": code}}, "StartExecution")
 
-def test_未認可userId_putEventsが呼ばれない() -> None:
-    """[D6] allowlist に含まれない userId の場合、putEvents が呼ばれないことを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+
+# ===== スキップ系テスト =====
+
+def test_未認可userId_start_executionが呼ばれない() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
     settings = _make_settings(allowlist_line_user_ids=["Uallowed"])
     webhook_request = _make_webhook_request([_make_text_event(user_id="Unotallowed")])
@@ -133,11 +133,8 @@ def test_未認可userId_putEventsが呼ばれない() -> None:
     mock_boto3.assert_not_called()
 
 
-def test_followイベント_putEventsが呼ばれない() -> None:
-    """message 以外のイベントタイプ（follow）の場合、putEvents が呼ばれないことを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+def test_followイベント_start_executionが呼ばれない() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
     settings = _make_settings()
     webhook_request = _make_webhook_request([_make_follow_event()])
@@ -148,11 +145,8 @@ def test_followイベント_putEventsが呼ばれない() -> None:
     mock_boto3.assert_not_called()
 
 
-def test_未対応メッセージタイプ_putEventsが呼ばれない() -> None:
-    """sticker 等の未対応メッセージタイプの場合、putEvents が呼ばれないことを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+def test_未対応メッセージタイプ_start_executionが呼ばれない() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
     settings = _make_settings()
     webhook_request = _make_webhook_request([_make_sticker_event()])
@@ -163,11 +157,8 @@ def test_未対応メッセージタイプ_putEventsが呼ばれない() -> None
     mock_boto3.assert_not_called()
 
 
-def test_空events_putEventsが呼ばれない() -> None:
-    """events が空リストの場合、putEvents が呼ばれないことを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+def test_空events_start_executionが呼ばれない() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
     settings = _make_settings()
     webhook_request = _make_webhook_request([])
@@ -178,122 +169,118 @@ def test_空events_putEventsが呼ばれない() -> None:
     mock_boto3.assert_not_called()
 
 
-# ===== 正常系テスト（D10: putEvents のみ） =====
+# ===== 正常系テスト =====
 
-def test_テキストメッセージ_putEventsが呼ばれる() -> None:
-    """[D10] テキストメッセージの場合、EventBridge.putEvents が呼ばれることを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+def test_テキストメッセージ_start_executionが呼ばれる() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
-    settings = _make_settings()
+    sm_arn = "arn:aws:states:ap-northeast-1:123:stateMachine:line-sm"
+    settings = _make_settings(line_sm_arn=sm_arn)
     text = "明日10時に会議があります"
     webhook_request = _make_webhook_request(
         [_make_text_event(user_id="Uuser", text=text, message_id="msg-001")]
     )
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         process_webhook(webhook_request, settings=settings)
 
-    mock_events_client.put_events.assert_called_once()
-    call_args = mock_events_client.put_events.call_args
-    entries = call_args.kwargs["Entries"]
-    assert len(entries) == 1
-    detail = json.loads(entries[0]["Detail"])
+    mock_sfn.start_execution.assert_called_once()
+    kwargs = mock_sfn.start_execution.call_args.kwargs
+    assert kwargs["stateMachineArn"] == sm_arn
+    assert kwargs["name"] == "msg-001"
+    detail = json.loads(kwargs["input"])["detail"]
     assert detail["message_type"] == "text"
     assert detail["message_id"] == "msg-001"
     assert detail["text"] == text
     assert detail["user_id"] == "Uuser"
 
 
-def test_画像メッセージ_putEventsが呼ばれる() -> None:
-    """[D10] 画像メッセージの場合、EventBridge.putEvents が呼ばれることを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+def test_画像メッセージ_start_executionが呼ばれる() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
-    settings = _make_settings()
+    sm_arn = "arn:aws:states:ap-northeast-1:123:stateMachine:line-sm"
+    settings = _make_settings(line_sm_arn=sm_arn)
     webhook_request = _make_webhook_request(
         [_make_image_event(user_id="Uuser", message_id="img-001")]
     )
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         process_webhook(webhook_request, settings=settings)
 
-    mock_events_client.put_events.assert_called_once()
-    call_args = mock_events_client.put_events.call_args
-    entries = call_args.kwargs["Entries"]
-    assert len(entries) == 1
-    detail = json.loads(entries[0]["Detail"])
+    mock_sfn.start_execution.assert_called_once()
+    kwargs = mock_sfn.start_execution.call_args.kwargs
+    assert kwargs["name"] == "img-001"
+    detail = json.loads(kwargs["input"])["detail"]
     assert detail["message_type"] == "image"
     assert detail["message_id"] == "img-001"
     assert detail["user_id"] == "Uuser"
 
 
-def test_putEventsのイベントソースとDetailType確認() -> None:
-    """EventBridge エントリの Source と DetailType が正しいことを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+def test_空allowlist_全ユーザーにstart_executionが呼ばれる() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
-    settings = _make_settings()
-    webhook_request = _make_webhook_request([_make_text_event()])
-
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
-        process_webhook(webhook_request, settings=settings)
-
-    entries = mock_events_client.put_events.call_args.kwargs["Entries"]
-    assert entries[0]["Source"] == "calendar-auto-register.line"
-    assert entries[0]["DetailType"] == "LineMessageEvent"
-
-
-def test_空allowlist_全ユーザーにputEventsが呼ばれる() -> None:
-    """[D6] allowlist が空のとき、全ユーザーに対して putEvents が呼ばれることを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
-
-    settings = _make_settings(allowlist_line_user_ids=[])  # 空リスト = 全許可
+    settings = _make_settings(allowlist_line_user_ids=[])
     webhook_request = _make_webhook_request([_make_text_event(user_id="Uanyone")])
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         process_webhook(webhook_request, settings=settings)
 
-    mock_events_client.put_events.assert_called_once()
+    mock_sfn.start_execution.assert_called_once()
 
 
-def test_認可userId_putEventsが呼ばれる() -> None:
-    """[D6] allowlist に含まれる userId の場合、putEvents が呼ばれることを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+def test_認可userId_start_executionが呼ばれる() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
     settings = _make_settings(allowlist_line_user_ids=["Uauthorized"])
     webhook_request = _make_webhook_request([_make_text_event(user_id="Uauthorized")])
 
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client):
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn):
         process_webhook(webhook_request, settings=settings)
 
-    mock_events_client.put_events.assert_called_once()
+    mock_sfn.start_execution.assert_called_once()
 
 
-def test_LLM呼び出しは行われない() -> None:
-    """[D10] process_webhook は LLM を呼び出さないことを確認する。"""
-    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import (
-        process_webhook,
-    )
+# ===== 冪等性テスト（Dedup） =====
+
+def test_重複messageId_ExecutionAlreadyExists_は正常終了() -> None:
+    """LINE リトライで同一 message_id が来た場合、例外を上げずに無視する。"""
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
+
+    settings = _make_settings()
+    webhook_request = _make_webhook_request([_make_text_event(message_id="dup-001")])
+
+    mock_sfn = MagicMock()
+    mock_sfn.start_execution.side_effect = _make_client_error("ExecutionAlreadyExists")
+    with patch("boto3.client", return_value=mock_sfn):
+        process_webhook(webhook_request, settings=settings)  # 例外が出ないこと
+
+
+def test_その他ClientError_は再送出される() -> None:
+    """ExecutionAlreadyExists 以外の ClientError は呼び出し元に伝播する。"""
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
 
     settings = _make_settings()
     webhook_request = _make_webhook_request([_make_text_event()])
 
-    # boto3 をモックしてputEventsを受け付ける
-    mock_events_client = MagicMock()
-    with patch("boto3.client", return_value=mock_events_client), \
+    mock_sfn = MagicMock()
+    mock_sfn.start_execution.side_effect = _make_client_error("AccessDeniedException")
+    with patch("boto3.client", return_value=mock_sfn):
+        with pytest.raises(ClientError):
+            process_webhook(webhook_request, settings=settings)
+
+
+def test_LLM呼び出しは行われない() -> None:
+    from calendar_auto_register.features.line_webhook.usecase_line_webhook_post import process_webhook
+
+    settings = _make_settings()
+    webhook_request = _make_webhook_request([_make_text_event()])
+
+    mock_sfn = MagicMock()
+    with patch("boto3.client", return_value=mock_sfn), \
          patch("calendar_auto_register.clients.bedrock_client.invoke_model") as mock_bedrock:
         process_webhook(webhook_request, settings=settings)
 

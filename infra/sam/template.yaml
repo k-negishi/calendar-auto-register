@@ -44,6 +44,7 @@ Resources:
         Variables:
           APP_ENV: prod
           SSM_DOTENV_PARAMETER: !Ref SsmDotenvParameter
+          LINE_SM_ARN: !Ref LineStateMachine
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:
@@ -55,8 +56,10 @@ Resources:
             Action:
               - "bedrock:InvokeModel"
             Resource:
-              # テキスト抽出モデル（メール・LINE テキスト共通）
-              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+              # テキスト抽出モデル（メール・LINE テキスト共通）- JP クロスリージョン推論プロファイル
+              - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/jp.anthropic.claude-haiku-4-5-20251001-v1:0"
+              - "arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+              - "arn:aws:bedrock:ap-northeast-3::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
         - Statement:
             Effect: Allow
             Action:
@@ -67,11 +70,11 @@ Resources:
             Effect: Allow
             Action: "s3:ListBucket"
             Resource: !Sub "arn:aws:s3:::${S3RawMailBucketName}"
-        # LINE Webhook: EventBridge にイベントを発行するための権限 [D10]
+        # LINE Webhook: LINE SM を直接起動するための権限 [Dedup: message_id を実行名に使用]
         - Statement:
             Effect: Allow
-            Action: "events:PutEvents"
-            Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+            Action: "states:StartExecution"
+            Resource: !Ref LineStateMachine
       Events:
         ApiRoot:
           Type: Api
@@ -169,7 +172,6 @@ Resources:
                 Action: states:StartExecution
                 Resource:
                   - !Ref MailStateMachine
-                  - !Ref LineStateMachine
 
   # =========================================================
   # Step Functions: Mail State Machine
@@ -415,22 +417,6 @@ Resources:
                 "bucket": "<bucket>"
               }
 
-  # LINE Webhook → LINE State Machine
-  LineEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-line-sm"
-      Description: "LINE Webhook から発行されたイベントで LINE State Machine を起動する"
-      EventPattern:
-        source:
-          - calendar-auto-register.line
-      State: ENABLED
-      Targets:
-        - Id: LineStateMachineTarget
-          Arn: !Ref LineStateMachine
-          RoleArn: !GetAtt EvbToSfnRole.Arn
-          # InputTransformer なし: process_webhook が putEvents した Detail をそのまま SFN に渡す
-          # Detail: {"message_type": "text"|"image", "message_id": "...", "text": "...", "user_id": "..."}
 
 Outputs:
   CalendarFunctionArn:

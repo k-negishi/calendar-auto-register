@@ -31,7 +31,7 @@
 
 - **Lambdalith** = 単一 Lambda が全 API ルートを処理（FastAPI + Mangum）。ビジネスロジックの単位は HTTP エンドポイント
 - **SFN** = オーケストレーター。各ステップを HTTP Task で Lambdalith の API を順番に呼ぶ
-- **EventBridge** = SFN の起動トリガー（S3 Event / LINE Webhook からの putEvents）
+- **EventBridge** = SFN の起動トリガー（S3 Event → Mail SM のみ）
 - **Python 関数直接呼び出しによるオーケストレーションは行わない**。各ステップは API を経由する
 
 ### 1.2 メール処理フロー
@@ -56,11 +56,9 @@ LINE Platform
 API Gateway → Lambda（Lambdalith）
   ↓ [Layer 1] HMAC-SHA256 署名検証 → NG: 403
   ↓ [Layer 2] userId allowlist 検証 → NG: スキップ（200 OK）
-  ↓ EventBridge.putEvents（LINE イベント詳細を乗せる）
-  ↓ 200 OK ← LINE Platform に即返却（5 秒制約を解消）
+  ↓ SFN.StartExecution(name=message_id)  ← 重複排除: 同一 message_id は ExecutionAlreadyExists で無視
+  ↓ 200 OK ← LINE Platform に即返却
 
-EventBridge
-  ↓ Rule: source=calendar-auto-register.line → StartExecution
 LINE State Machine (Step Functions)
   → Choice: message.type?
       text  → POST /llm/extract-event        （text → events）
@@ -68,6 +66,11 @@ LINE State Machine (Step Functions)
   → POST /calendar/events
   → POST /line/notify
 ```
+
+> **設計変更（2026-06-17）**: 当初は EvB.putEvents → EventBridge Rule → SFN の間接起動だったが、
+> Lambda コールドスタートで LINE Platform がリトライし同一 message_id が二重起動する問題が判明。
+> Lambda から SFN を直接 `StartExecution(name=message_id)` で起動する方式に変更。
+> EventBridge の LINE Rule は不要となり削除。
 
 ### 1.4 実装アプローチ（TDD）
 
@@ -157,7 +160,7 @@ async def line_webhook_post(request: Request) -> dict:
     # 4. パース
     webhook_request = LineWebhookRequest(**json.loads(body))
 
-    # 5. [Layer 2] userId チェック + EventBridge.putEvents
+    # 5. [Layer 2] userId チェック + SFN.StartExecution
     process_webhook(webhook_request, settings=settings)
 
     # 6. 200 OK（即返却）
@@ -166,7 +169,7 @@ async def line_webhook_post(request: Request) -> dict:
 
 ```python
 def process_webhook(request: LineWebhookRequest, *, settings: Settings) -> None:
-    """userId 検証 + EventBridge.putEvents。LLM/Calendar/LINE 通知はここでは行わない。"""
+    """userId 検証 + SFN.StartExecution(name=message_id)。LLM/Calendar/LINE 通知はここでは行わない。"""
     for event in request.events:
         if event.type != "message" or event.message is None:
             continue
@@ -177,24 +180,29 @@ def process_webhook(request: LineWebhookRequest, *, settings: Settings) -> None:
             logger.warning("未認可 userId: %s", event.source.userId)
             continue
 
-        _put_line_event(event, settings=settings)
+        _start_line_sm(event, settings=settings)
 
 
-def _put_line_event(event: LineWebhookEvent, *, settings: Settings) -> None:
-    """EventBridge に LINE イベントを発行する。"""
+def _start_line_sm(event: LineWebhookEvent, *, settings: Settings) -> None:
+    """LINE SM を message_id を実行名として直接起動する。"""
     import boto3, json
-    client = boto3.client("events", region_name=settings.region)
-    client.put_events(Entries=[{
-        "Source": "calendar-auto-register.line",
-        "DetailType": "LineMessageEvent",
-        "Detail": json.dumps({
-            "message_type": event.message.type,
-            "message_id": event.message.id,
-            "text": event.message.text,
-            "user_id": event.source.userId,
-        }),
-        "EventBusName": "default",
-    }])
+    from botocore.exceptions import ClientError
+    client = boto3.client("stepfunctions", region_name=settings.region)
+    try:
+        client.start_execution(
+            stateMachineArn=settings.line_sm_arn,
+            name=event.message.id,  # LINE message_id = 実行名 → 重複排除
+            input=json.dumps({"detail": {
+                "message_type": event.message.type,
+                "message_id": event.message.id,
+                "text": event.message.text,
+                "user_id": event.source.userId,
+            }}),
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ExecutionAlreadyExists":
+            return  # LINE リトライによる重複を無視
+        raise
 ```
 
 ---
@@ -211,7 +219,7 @@ def _put_line_event(event: LineWebhookEvent, *, settings: Settings) -> None:
 [Layer 2] source.userId allowlist 検証 (usecase 層)
   allowlist_line_user_ids に含まれない userId のイベントをスキップ。
   LINE URL・Channel Secret 流出時の不正利用を防止。
-  → NG: 200 OK（LINE 要件を満たす）+ WARNING ログ + putEvents スキップ
+  → NG: 200 OK（LINE 要件を満たす）+ WARNING ログ + StartExecution スキップ
 ```
 
 ### 3.2 SFN → API Gateway 認証
@@ -381,7 +389,7 @@ API Key は SFN の State 定義の Parameters に SecureString 参照で設定�
 | D7 | `_run_extraction_chain()` で LangChain チェーン共通化 | メール・LINE テキストで同一チェーンを共有 |
 | D8 | SFN = オーケストレーター、EvB = トリガー | Python 関数直接呼び出しによるオーケストレーションを排除。各ステップが独立した HTTP API として存在することで単体テスト・再実行が容易 |
 | D9 | `POST /llm/extract-event` をテキスト/メール共通化 | `text` 必須、メールコンテキストは任意。LINE テキスト・メールで分岐 |
-| D10 | `POST /line/webhook` は EvB.putEvents のみ | LINE の 5 秒応答制約を解決。LLM/Calendar/通知は SFN が非同期で処理 |
+| D10 | `POST /line/webhook` は SFN.StartExecution(name=message_id) のみ | LINE コールドスタートリトライによる二重起動を排除。ExecutionAlreadyExists で同一 message_id を自動スキップ。LLM/Calendar/通知は SFN が非同期で処理 |
 | D11 | 2 つの SM（Mail SM / LINE SM）を別々に定義 | 入力スキーマが根本的に異なる。フローが独立して読みやすい |
 
 ---
@@ -441,11 +449,11 @@ LineStateMachine:
 ### 6.2 Lambda IAM 追加
 
 ```yaml
-# Lambda が EventBridge に putEvents できるよう追加
+# Lambda が LINE SM を直接起動できるよう追加（重複排除: name=message_id）
 - Statement:
     Effect: Allow
-    Action: "events:PutEvents"
-    Resource: "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+    Action: "states:StartExecution"
+    Resource: !Ref LineStateMachine
 
 # Bedrock: Vision モデル追加
 - Statement:
@@ -476,7 +484,7 @@ LineStateMachine:
 | テスト対象 | 確認内容 |
 |---|---|
 | `verify_line_signature()` | 正常/不正署名 |
-| `process_webhook()` | userId check + putEvents 呼び出し |
+| `process_webhook()` | userId check + StartExecution(name=message_id) 呼び出し |
 | `POST /line/webhook` router | 署名 NG→403、secret 未設定→500、正常→200 |
 | `POST /llm/extract-event` | text のみ→raw text パス、mail フィールドあり→mail パス |
 | `POST /llm/extract-event-image` | message_id → LINE DL → Bedrock → events |
@@ -485,9 +493,9 @@ LineStateMachine:
 
 | シナリオ | 期待結果 |
 |---|---|
-| 正常テキスト Webhook | 200 OK + putEvents 呼び出し |
-| 正常画像 Webhook | 200 OK + putEvents 呼び出し |
+| 正常テキスト Webhook | 200 OK + StartExecution 呼び出し |
+| 正常画像 Webhook | 200 OK + StartExecution 呼び出し |
 | 署名検証失敗 | 403 |
-| 未認可 userId | 200 OK（putEvents されない）|
+| 未認可 userId | 200 OK（StartExecution されない）|
 | events 空配列 | 200 OK |
 | LINE_CHANNEL_SECRET 未設定 | 500 |
