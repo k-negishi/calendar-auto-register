@@ -362,7 +362,8 @@ def extract_events_from_image(
             region=settings.region,
             model_id=vision_model_id,
             image_bytes=image_bytes,
-            prompt=CALENDAR_EVENT_EXTRACTION_SYSTEM,
+            system=CALENDAR_EVENT_EXTRACTION_SYSTEM,
+            prompt="この画像からカレンダーの予定情報を抽出してください。",
         )
         events = _parse_image_llm_response(response)
         # [D4] テキストパスと同一の正規化を適用

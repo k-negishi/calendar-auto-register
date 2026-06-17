@@ -57,6 +57,7 @@ def invoke_model_with_image(
     model_id: str,
     image_bytes: bytes,
     prompt: str,
+    system: str | None = None,
     media_type: str = "image/jpeg",
     max_tokens: int = 4096,
 ) -> dict[str, Any]:
@@ -82,7 +83,7 @@ def invoke_model_with_image(
     import base64
 
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-    body = json.dumps({
+    request: dict[str, Any] = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
         "messages": [
@@ -104,7 +105,10 @@ def invoke_model_with_image(
                 ],
             }
         ],
-    }).encode("utf-8")
+    }
+    if system:
+        request["system"] = system
+    body = json.dumps(request).encode("utf-8")
 
     return invoke_model(
         region=region,
