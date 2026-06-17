@@ -702,3 +702,32 @@ def test_extract_event_image_正常系() -> None:
     assert "events" in data
     assert len(data["events"]) == 1
     assert data["events"][0]["summary"] == "セミナー"
+
+
+def test_extract_event_image_VISIONモデルIDが使われる() -> None:
+    """BEDROCK_VISION_MODEL_ID が設定されている場合、invoke_model_with_image にそのモデル ID が渡る。"""
+    os.environ["LINE_CHANNEL_ACCESS_TOKEN"] = "dummy_token"
+    os.environ["BEDROCK_MODEL_ID"] = "haiku-model"
+    os.environ["BEDROCK_VISION_MODEL_ID"] = "sonnet-vision-model"
+    from calendar_auto_register.core.settings import load_settings
+    load_settings.cache_clear()
+
+    bedrock_response = {"content": [{"type": "text", "text": json.dumps({"events": []})}]}
+    mock_invoke = MagicMock(return_value=bedrock_response)
+
+    with patch(
+        "calendar_auto_register.clients.line_client.get_message_content",
+        return_value=b"\xff\xd8\xff",
+    ), patch(
+        "calendar_auto_register.clients.bedrock_client.invoke_model_with_image",
+        mock_invoke,
+    ):
+        from fastapi.testclient import TestClient
+        from calendar_auto_register.app import create_app
+        client = TestClient(create_app())
+        client.post("/llm/extract-event-image", json={"message_id": "img-001"})
+
+    mock_invoke.assert_called_once()
+    assert mock_invoke.call_args.kwargs["model_id"] == "sonnet-vision-model"
+
+    os.environ.pop("BEDROCK_VISION_MODEL_ID", None)

@@ -25,6 +25,7 @@ class Settings:
     google_credentials: str
     allowlist_senders: list[str]
     bedrock_model_id: str | None
+    bedrock_vision_model_id: str | None
     line_channel_access_token: str | None
     line_user_id: str | None
     api_key: str | None
@@ -111,6 +112,7 @@ def load_settings() -> Settings:
         google_credentials=_get_required_env("GOOGLE_CREDENTIALS"),
         allowlist_senders=_load_json_list(os.getenv("ALLOWLIST_SENDERS")),
         bedrock_model_id=os.getenv("BEDROCK_MODEL_ID"),
+        bedrock_vision_model_id=os.getenv("BEDROCK_VISION_MODEL_ID"),
         line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"),
         line_user_id=os.getenv("LINE_USER_ID"),
         api_key=os.getenv("API_KEY"),
