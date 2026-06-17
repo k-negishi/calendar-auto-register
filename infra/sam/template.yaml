@@ -56,10 +56,14 @@ Resources:
             Action:
               - "bedrock:InvokeModel"
             Resource:
-              # テキスト抽出モデル（メール・LINE テキスト共通）- JP クロスリージョン推論プロファイル
+              # テキスト抽出（メール・LINE テキスト）- Haiku 4.5 JP クロスリージョン推論プロファイル
               - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/jp.anthropic.claude-haiku-4-5-20251001-v1:0"
               - "arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
               - "arn:aws:bedrock:ap-northeast-3::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+              # 画像抽出（LINE 画像）- Sonnet 4.5 JP クロスリージョン推論プロファイル
+              - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/jp.anthropic.claude-sonnet-4-5-20251001-v1:0"
+              - "arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-sonnet-4-5-20251001-v1:0"
+              - "arn:aws:bedrock:ap-northeast-3::foundation-model/anthropic.claude-sonnet-4-5-20251001-v1:0"
         - Statement:
             Effect: Allow
             Action:

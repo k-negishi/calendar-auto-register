@@ -340,8 +340,9 @@ def extract_events_from_image(
 
     if not settings.line_channel_access_token:
         raise ValueError("LINE_CHANNEL_ACCESS_TOKEN が未設定です")
-    if not settings.bedrock_model_id:
-        raise ValueError("BEDROCK_MODEL_ID が未設定です")
+    vision_model_id = settings.bedrock_vision_model_id or settings.bedrock_model_id
+    if not vision_model_id:
+        raise ValueError("BEDROCK_VISION_MODEL_ID または BEDROCK_MODEL_ID が未設定です")
 
     try:
         image_bytes = line_client.get_message_content(
@@ -359,7 +360,7 @@ def extract_events_from_image(
     def _invoke_with_retry() -> list[GoogleCalendarEventModel]:
         response = bedrock_client.invoke_model_with_image(
             region=settings.region,
-            model_id=settings.bedrock_model_id,  # type: ignore[arg-type]
+            model_id=vision_model_id,
             image_bytes=image_bytes,
             prompt=CALENDAR_EVENT_EXTRACTION_SYSTEM,
         )
