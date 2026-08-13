@@ -56,8 +56,11 @@ Resources:
             Action:
               - "bedrock:InvokeModel"
             Resource:
-              # テキスト・画像抽出共通 - Sonnet 4.5 JP クロスリージョン推論プロファイル
+              # テキスト・画像抽出共通 - JP クロスリージョン推論プロファイル
+              - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/jp.anthropic.claude-haiku-4-5-20251001-v1:0"
               - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/jp.anthropic.claude-sonnet-4-5-20250929-v1:0"
+              - "arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+              - "arn:aws:bedrock:ap-northeast-3::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
               - "arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0"
               - "arn:aws:bedrock:ap-northeast-3::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0"
         - Statement:
@@ -210,6 +213,16 @@ Resources:
               RequestBody:
                 "s3_key.$": "$.s3_key"
             ResultPath: "$.mail_parse"
+            Retry:
+              - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
             Next: LlmExtractEventApi
 
           LlmExtractEventApi:
@@ -234,6 +247,16 @@ Resources:
                 "subject.$": "$.mail_parse.ResponseBody.normalized_mail.subject"
                 "received_at.$": "$.mail_parse.ResponseBody.normalized_mail.received_at"
             ResultPath: "$.llm_extract_event"
+            Retry:
+              - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
             Next: CalendarEventsApi
 
           CalendarEventsApi:
@@ -253,6 +276,10 @@ Resources:
             ResultPath: "$.calendar_events"
             Retry:
               - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
                   - States.TaskFailed
                 IntervalSeconds: 2
                 MaxAttempts: 3
@@ -272,6 +299,16 @@ Resources:
                 Content-Type:
                   - application/json
               "RequestBody.$": "$.calendar_events.ResponseBody"
+            Retry:
+              - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
             End: true
 
   # =========================================================
@@ -321,6 +358,16 @@ Resources:
               RequestBody:
                 "text.$": "$.detail.text"
             ResultPath: "$.llm_extract"
+            Retry:
+              - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
             Next: CalendarEventsApi
 
           ExtractFromImage:
@@ -338,6 +385,16 @@ Resources:
               RequestBody:
                 "message_id.$": "$.detail.message_id"
             ResultPath: "$.llm_extract"
+            Retry:
+              - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
             Next: CalendarEventsApi
 
           CalendarEventsApi:
@@ -357,6 +414,10 @@ Resources:
             ResultPath: "$.calendar_events"
             Retry:
               - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
                   - States.TaskFailed
                 IntervalSeconds: 2
                 MaxAttempts: 3
@@ -376,6 +437,16 @@ Resources:
                 Content-Type:
                   - application/json
               "RequestBody.$": "$.calendar_events.ResponseBody"
+            Retry:
+              - ErrorEquals:
+                  - ApiGateway.500
+                  - ApiGateway.502
+                  - ApiGateway.503
+                  - ApiGateway.504
+                  - States.TaskFailed
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
             End: true
 
           Unsupported:
