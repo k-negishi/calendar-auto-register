@@ -328,7 +328,12 @@ def test_支払い期限イベントを抽出できる() -> None:
                 "summary": "支払い期限 23:59@コンサート@サンプルアリーナ東京",
                 "start": {"dateTime": "2025-12-30T20:00:00+09:00", "timeZone": "Asia/Tokyo"},
                 "end": {"dateTime": "2025-12-30T23:59:00+09:00", "timeZone": "Asia/Tokyo"},
-                "description": "支払い期限: 2025年12月30日 23:59\n支払い方法: コンビニ支払い\n払込票番号: 1234-5678-9012\n合計金額: ¥5,000",
+                "description": (
+                    "支払い期限: 2025年12月30日 23:59\n"
+                    "支払い方法: コンビニ支払い\n"
+                    "払込票番号: 1234-5678-9012\n"
+                    "合計金額: ¥5,000"
+                ),
             },
         ]
     }
@@ -676,8 +681,14 @@ def test_extract_event_image_正常系() -> None:
                     "events": [
                         {
                             "summary": "セミナー",
-                            "start": {"dateTime": "2024-12-25T10:00:00+09:00", "timeZone": "Asia/Tokyo"},
-                            "end": {"dateTime": "2024-12-25T12:00:00+09:00", "timeZone": "Asia/Tokyo"},
+                            "start": {
+                                "dateTime": "2024-12-25T10:00:00+09:00",
+                                "timeZone": "Asia/Tokyo",
+                            },
+                            "end": {
+                                "dateTime": "2024-12-25T12:00:00+09:00",
+                                "timeZone": "Asia/Tokyo",
+                            },
                             "location": None,
                             "description": None,
                         }
@@ -705,7 +716,7 @@ def test_extract_event_image_正常系() -> None:
 
 
 def test_extract_event_image_VISIONモデルIDが使われる() -> None:
-    """BEDROCK_VISION_MODEL_ID が設定されている場合、invoke_model_with_image にそのモデル ID が渡る。"""
+    """BEDROCK_VISION_MODEL_ID が設定されている場合、そのモデル ID が渡る。"""
     os.environ["LINE_CHANNEL_ACCESS_TOKEN"] = "dummy_token"
     os.environ["BEDROCK_MODEL_ID"] = "haiku-model"
     os.environ["BEDROCK_VISION_MODEL_ID"] = "sonnet-vision-model"
@@ -722,8 +733,6 @@ def test_extract_event_image_VISIONモデルIDが使われる() -> None:
         "calendar_auto_register.clients.bedrock_client.invoke_model_with_image",
         mock_invoke,
     ):
-        from fastapi.testclient import TestClient
-        from calendar_auto_register.app import create_app
         client = TestClient(create_app())
         client.post("/llm/extract-event-image", json={"message_id": "img-001"})
 
@@ -731,3 +740,29 @@ def test_extract_event_image_VISIONモデルIDが使われる() -> None:
     assert mock_invoke.call_args.kwargs["model_id"] == "sonnet-vision-model"
 
     os.environ.pop("BEDROCK_VISION_MODEL_ID", None)
+
+
+def test_extract_event_image_相対日付解決用の現在日時をプロンプトに含める() -> None:
+    """画像内の「明日」などを解決できるよう、Vision プロンプトに現在日時を含める。"""
+    os.environ["LINE_CHANNEL_ACCESS_TOKEN"] = "dummy_token"
+    os.environ["BEDROCK_MODEL_ID"] = "test-model"
+    from calendar_auto_register.core.settings import load_settings
+    load_settings.cache_clear()
+
+    bedrock_response = {"content": [{"type": "text", "text": json.dumps({"events": []})}]}
+    mock_invoke = MagicMock(return_value=bedrock_response)
+
+    with patch(
+        "calendar_auto_register.clients.line_client.get_message_content",
+        return_value=b"\xff\xd8\xff",
+    ), patch(
+        "calendar_auto_register.clients.bedrock_client.invoke_model_with_image",
+        mock_invoke,
+    ):
+        client = TestClient(create_app())
+        res = client.post("/llm/extract-event-image", json={"message_id": "img-001"})
+
+    assert res.status_code == 200
+    prompt = mock_invoke.call_args.kwargs["prompt"]
+    assert "現在日時:" in prompt
+    assert "相対日付" in prompt

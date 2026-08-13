@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import boto3  # type: ignore[import-untyped]
 from bs4 import BeautifulSoup
@@ -279,12 +281,22 @@ def extract_events_from_raw_text(
     """
     from calendar_auto_register.core.prompts import build_line_text_user_message
 
-    user_message = build_line_text_user_message(text)
+    user_message = build_line_text_user_message(
+        text,
+        current_datetime=_current_datetime_for_prompt(settings),
+    )
     return _run_extraction_chain(user_message, settings=settings)
 
 
 # D4: 画像パスでも normalize_event_to_half_width() を使えるよう公開エイリアスを定義
 normalize_event_to_half_width = _normalize_event_to_half_width
+
+
+def _current_datetime_for_prompt(settings: Settings) -> str:
+    """LINE 入力の相対日付解決に使う基準日時を返す。"""
+
+    now = datetime.now(ZoneInfo(settings.timezone_default))
+    return now.isoformat(timespec="seconds")
 
 
 def _parse_image_llm_response(
@@ -363,7 +375,11 @@ def extract_events_from_image(
             model_id=vision_model_id,
             image_bytes=image_bytes,
             system=CALENDAR_EVENT_EXTRACTION_SYSTEM,
-            prompt="この画像からカレンダーの予定情報を抽出してください。",
+            prompt=(
+                "この画像からカレンダーの予定情報を抽出してください。\n"
+                f"現在日時: {_current_datetime_for_prompt(settings)}\n"
+                "「今日」「明日」「来週」などの相対日付は現在日時を基準に解決してください。"
+            ),
         )
         events = _parse_image_llm_response(response)
         # [D4] テキストパスと同一の正規化を適用
