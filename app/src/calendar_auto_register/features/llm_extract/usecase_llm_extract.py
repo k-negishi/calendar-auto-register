@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -30,6 +30,7 @@ from calendar_auto_register.core.settings import Settings
 from calendar_auto_register.features.llm_extract.schemas_llm_extract import (
     GoogleCalendarEventModel,
 )
+from calendar_auto_register.shared.schemas.calendar import DateTimeModel
 
 
 def _preprocess_mail_body(normalized_mail: NormalizedMail) -> str:
@@ -254,7 +255,8 @@ def extract_events(
     # Step 2: プロンプト構築（前処理済みメール）
     user_message_text = build_extraction_user_message(preprocessed_mail)
 
-    return _run_extraction_chain(user_message_text, settings=settings)
+    events = _run_extraction_chain(user_message_text, settings=settings)
+    return _apply_concert_arrival_target(events, cleaned_text)
 
 
 def extract_events_from_raw_text(
@@ -285,7 +287,83 @@ def extract_events_from_raw_text(
         text,
         current_datetime=_current_datetime_for_prompt(settings),
     )
-    return _run_extraction_chain(user_message, settings=settings)
+    events = _run_extraction_chain(user_message, settings=settings)
+    return _apply_concert_arrival_target(events, text)
+
+
+def _apply_concert_arrival_target(
+    events: list[GoogleCalendarEventModel],
+    source_text: str,
+) -> list[GoogleCalendarEventModel]:
+    """本文の OPEN/START からコンサートの到着目標時刻を確定する。
+
+    LLMが開場時刻をイベント開始時刻として返すことがあるため、
+    開場1時間前を到着目標として決定論的に補正する。受付・発売イベントは
+    公演日が異なるため、日時が公演日のイベントだけを対象にする。
+    """
+    match = re.search(
+        r"(?:OPEN|開場)\s*(\d{1,2}):(\d{2})\s*[/／]\s*"
+        r"(?:START|開演)\s*(\d{1,2}):(\d{2})",
+        source_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return events
+
+    open_hour, open_minute, start_hour, start_minute = (
+        int(value) for value in match.groups()
+    )
+    has_explicit_end = bool(re.search(r"終演", source_text))
+    adjusted: list[GoogleCalendarEventModel] = []
+
+    for event in events:
+        if not isinstance(event.start, DateTimeModel) or not isinstance(event.end, DateTimeModel):
+            adjusted.append(event)
+            continue
+        if any(keyword in event.summary for keyword in ("受付", "発売", "支払い期限")):
+            adjusted.append(event)
+            continue
+
+        try:
+            event_start = datetime.fromisoformat(event.start.dateTime.replace("Z", "+00:00"))
+        except ValueError:
+            adjusted.append(event)
+            continue
+
+        opening = event_start.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+        show_start = event_start.replace(
+            hour=start_hour, minute=start_minute, second=0, microsecond=0
+        )
+        arrival_target = opening - timedelta(hours=1)
+        end = event.end
+        if not has_explicit_end:
+            end_datetime = show_start + timedelta(hours=3)
+            end = end.model_copy(update={"dateTime": end_datetime.isoformat()})
+
+        arrival_description = (
+            f"到着目標: {arrival_target.strftime('%Y-%m-%d %H:%M')}（開場1時間前）\n"
+            f"開場: {opening.strftime('%H:%M')} / 開演: {show_start.strftime('%H:%M')}"
+        )
+        description = event.description or ""
+        description = re.sub(r"到着目標:.*(?:\n|$)", "", description).lstrip()
+        if description:
+            description = f"{arrival_description}\n{description}"
+        else:
+            description = arrival_description
+
+        adjusted.append(
+            event.model_copy(
+                update={
+                    "start": event.start.model_copy(
+                        update={"dateTime": arrival_target.isoformat()}
+                    ),
+                    "end": end,
+                    "description": description,
+                }
+            )
+        )
+
+    return adjusted
 
 
 # D4: 画像パスでも normalize_event_to_half_width() を使えるよう公開エイリアスを定義
