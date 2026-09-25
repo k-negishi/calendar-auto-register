@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -26,11 +25,16 @@ from calendar_auto_register.core.prompts import (
     CALENDAR_EVENT_EXTRACTION_SYSTEM,
     build_extraction_user_message,
 )
+from calendar_auto_register.core.relative_dates import (
+    RelativeDateResolution,
+    format_relative_date_context,
+    resolve_relative_dates,
+)
 from calendar_auto_register.core.settings import Settings
 from calendar_auto_register.features.llm_extract.schemas_llm_extract import (
     GoogleCalendarEventModel,
 )
-from calendar_auto_register.shared.schemas.calendar import DateTimeModel
+from calendar_auto_register.shared.schemas.calendar import DateModel, DateTimeModel
 
 
 def _preprocess_mail_body(normalized_mail: NormalizedMail) -> str:
@@ -49,8 +53,15 @@ def _preprocess_mail_body(normalized_mail: NormalizedMail) -> str:
     # HTML が優先、なければ text を使用
     body = normalized_mail.html or normalized_mail.text or ""
 
-    # BeautifulSoup で HTML タグを削除（テキストと URL の関連性は保持）
+    # HTMLリンクは表示文言と href を残してからテキスト化する。
     soup = BeautifulSoup(body, "html.parser")
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor.get("href", "")).strip()
+        if not href or href.startswith(("#", "javascript:", "data:")):
+            continue
+        label = anchor.get_text(" ", strip=True) or "リンク"
+        if href not in label:
+            anchor.replace_with(f"{label} ({href})")
     text = soup.get_text(separator="\n")
 
     # Unsubscribe 以降を削除（不要な購読管理情報）
@@ -68,9 +79,9 @@ def _preprocess_mail_body(normalized_mail: NormalizedMail) -> str:
 
 def _normalize_to_half_width(text: str) -> str:
     """
-    全角文字を半角に正規化する。
+    全角ASCII英数字・記号を半角にする。
 
-    NFKC (Compatibility Decomposition) を使用して、全角の英数字・記号を半角に変換。
+    NFKC全体変換は丸数字なども変換するため、全角ASCII範囲だけを対象にする。
 
     Args:
         text: 正規化対象のテキスト
@@ -78,7 +89,14 @@ def _normalize_to_half_width(text: str) -> str:
     Returns:
         半角に正規化されたテキスト
     """
-    return unicodedata.normalize("NFKC", text)
+    return "".join(
+        chr(ord(char) - 0xFEE0)
+        if "\uff01" <= char <= "\uff5e"
+        else "¥"
+        if char == "\uffe5"
+        else char
+        for char in text
+    )
 
 
 def _normalize_event_to_half_width(event: GoogleCalendarEventModel) -> GoogleCalendarEventModel:
@@ -254,8 +272,15 @@ def extract_events(
 
     # Step 2: プロンプト構築（前処理済みメール）
     user_message_text = build_extraction_user_message(preprocessed_mail)
+    reference_datetime = _reference_datetime_for_mail(normalized_mail, settings)
+    user_message_text += format_relative_date_context(
+        resolve_relative_dates(cleaned_text, reference_datetime=reference_datetime)
+    )
 
     events = _run_extraction_chain(user_message_text, settings=settings)
+    resolutions = resolve_relative_dates(cleaned_text, reference_datetime=reference_datetime)
+    events = _apply_single_relative_date_resolution(events, resolutions)
+    events = _align_event_description_weekdays(events)
     return _apply_concert_arrival_target(events, cleaned_text)
 
 
@@ -263,6 +288,7 @@ def extract_events_from_raw_text(
     text: str,
     *,
     settings: Settings,
+    reference_datetime: datetime | None = None,
 ) -> list[GoogleCalendarEventModel]:
     """raw テキストから LLM でイベント情報を抽出する（メール前処理なし）。
 
@@ -283,12 +309,127 @@ def extract_events_from_raw_text(
     """
     from calendar_auto_register.core.prompts import build_line_text_user_message
 
+    reference_datetime = _normalize_reference_datetime(reference_datetime, settings)
+    resolutions = resolve_relative_dates(text, reference_datetime=reference_datetime)
     user_message = build_line_text_user_message(
         text,
-        current_datetime=_current_datetime_for_prompt(settings),
+        current_datetime=reference_datetime.isoformat(timespec="seconds"),
+    ) + format_relative_date_context(
+        resolutions
     )
     events = _run_extraction_chain(user_message, settings=settings)
+    events = _apply_single_relative_date_resolution(events, resolutions)
+    events = _align_event_description_weekdays(events)
     return _apply_concert_arrival_target(events, text)
+
+
+def _apply_single_relative_date_resolution(
+    events: list[GoogleCalendarEventModel],
+    resolutions: list[RelativeDateResolution],
+) -> list[GoogleCalendarEventModel]:
+    """対応関係が一意な場合に限り、LLMが誤った相対日付を返した結果を補正する。"""
+    if len(events) != 1 or len(resolutions) != 1:
+        return events
+
+    event = events[0]
+    expected_date = resolutions[0].resolved_date
+    description = _replace_description_event_date(event.description, expected_date)
+
+    if isinstance(event.start, DateModel) and isinstance(event.end, DateModel):
+        try:
+            actual_start = date.fromisoformat(event.start.date)
+            actual_end = date.fromisoformat(event.end.date)
+        except ValueError:
+            return events
+        day_delta = expected_date - actual_start
+        if not day_delta.days:
+            if description != event.description:
+                return [event.model_copy(update={"description": description})]
+            return events
+        corrected = event.model_copy(
+            update={
+                "start": event.start.model_copy(update={"date": expected_date.isoformat()}),
+                "end": event.end.model_copy(
+                    update={"date": (actual_end + day_delta).isoformat()}
+                ),
+                "description": description,
+            }
+        )
+        return [corrected]
+
+    if isinstance(event.start, DateTimeModel) and isinstance(event.end, DateTimeModel):
+        try:
+            actual_start = datetime.fromisoformat(event.start.dateTime.replace("Z", "+00:00"))
+            actual_end = datetime.fromisoformat(event.end.dateTime.replace("Z", "+00:00"))
+        except ValueError:
+            return events
+        day_delta = expected_date - actual_start.date()
+        if not day_delta.days:
+            if description != event.description:
+                return [event.model_copy(update={"description": description})]
+            return events
+        corrected = event.model_copy(
+            update={
+                "start": event.start.model_copy(
+                    update={"dateTime": (actual_start + timedelta(days=day_delta.days)).isoformat()}
+                ),
+                "end": event.end.model_copy(
+                    update={"dateTime": (actual_end + timedelta(days=day_delta.days)).isoformat()}
+                ),
+                "description": description,
+            }
+        )
+        return [corrected]
+
+    return events
+
+
+def _replace_description_event_date(description: str | None, event_date: date) -> str | None:
+    """説明欄の先頭にある開催日時も、補正後の日付に揃える。"""
+    if not description:
+        return description
+    date_label = f"{event_date.year}年{event_date.month}月{event_date.day}日"
+    weekday = "月火水木金土日"[event_date.weekday()]
+    date_label_with_weekday = f"{date_label}({weekday})"
+    return re.sub(
+        r"^((?:開催日時|開始時刻):\s*)\d{4}年\d{1,2}月\d{1,2}日(?:\([月火水木金土日]\))?",
+        lambda match: f"{match.group(1)}{date_label_with_weekday}",
+        description,
+        count=1,
+    )
+
+
+def _align_event_description_weekdays(
+    events: list[GoogleCalendarEventModel],
+) -> list[GoogleCalendarEventModel]:
+    """説明欄先頭の開催日・曜日をイベント開始日に揃える。"""
+    aligned: list[GoogleCalendarEventModel] = []
+    for event in events:
+        if isinstance(event.start, DateModel):
+            try:
+                event_date = date.fromisoformat(event.start.date)
+            except ValueError:
+                aligned.append(event)
+                continue
+        elif isinstance(event.start, DateTimeModel):
+            try:
+                event_date = datetime.fromisoformat(
+                    event.start.dateTime.replace("Z", "+00:00")
+                ).date()
+            except ValueError:
+                aligned.append(event)
+                continue
+        else:
+            aligned.append(event)
+            continue
+
+        description = _replace_description_event_date(event.description, event_date)
+        aligned.append(
+            event if description == event.description else event.model_copy(
+                update={"description": description}
+            )
+        )
+    return aligned
 
 
 def _apply_concert_arrival_target(
@@ -370,11 +511,28 @@ def _apply_concert_arrival_target(
 normalize_event_to_half_width = _normalize_event_to_half_width
 
 
-def _current_datetime_for_prompt(settings: Settings) -> str:
-    """LINE 入力の相対日付解決に使う基準日時を返す。"""
+def _normalize_reference_datetime(
+    reference_datetime: datetime | None,
+    settings: Settings,
+) -> datetime:
+    """入力受信時刻を設定タイムゾーンへ揃える。未指定なら現在時刻を使う。"""
+    zone = ZoneInfo(settings.timezone_default)
+    if reference_datetime is None:
+        return datetime.now(zone)
+    if reference_datetime.tzinfo is None:
+        return reference_datetime.replace(tzinfo=zone)
+    return reference_datetime.astimezone(zone)
 
-    now = datetime.now(ZoneInfo(settings.timezone_default))
-    return now.isoformat(timespec="seconds")
+
+def _reference_datetime_for_mail(normalized_mail: NormalizedMail, settings: Settings) -> datetime:
+    """メールの受信日時を相対日付の基準にする。未指定なら現在日時を使う。"""
+    zone = ZoneInfo(settings.timezone_default)
+    received_at = normalized_mail.received_at
+    if received_at is None:
+        return datetime.now(zone)
+    if received_at.tzinfo is None:
+        return received_at.replace(tzinfo=zone)
+    return received_at.astimezone(zone)
 
 
 def _parse_image_llm_response(
@@ -406,6 +564,7 @@ def extract_events_from_image(
     message_id: str,
     *,
     settings: Settings,
+    reference_datetime: datetime | None = None,
 ) -> list[GoogleCalendarEventModel]:
     """LINE 画像メッセージから Vision LLM でイベント情報を抽出する。
 
@@ -427,6 +586,8 @@ def extract_events_from_image(
 
     from calendar_auto_register.clients import bedrock_client, line_client
     from calendar_auto_register.core.prompts import CALENDAR_EVENT_EXTRACTION_SYSTEM
+
+    reference_datetime = _normalize_reference_datetime(reference_datetime, settings)
 
     if not settings.line_channel_access_token:
         raise ValueError("LINE_CHANNEL_ACCESS_TOKEN が未設定です")
@@ -455,13 +616,16 @@ def extract_events_from_image(
             system=CALENDAR_EVENT_EXTRACTION_SYSTEM,
             prompt=(
                 "この画像からカレンダーの予定情報を抽出してください。\n"
-                f"現在日時: {_current_datetime_for_prompt(settings)}\n"
-                "「今日」「明日」「来週」などの相対日付は現在日時を基準に解決してください。"
+                f"現在日時: {reference_datetime.isoformat(timespec='seconds')}\n"
+                "相対日付は現在日時を基準に解決してください。"
+                "「次の水曜」「今度の水曜」は基準日より後の直近の水曜、"
+                "「来週水曜」は翌週、「再来週水曜」は翌々週（月曜始まり）の水曜を指します。"
             ),
         )
         events = _parse_image_llm_response(response)
         # [D4] テキストパスと同一の正規化を適用
-        return [_normalize_event_to_half_width(e) for e in events]
+        normalized = [_normalize_event_to_half_width(e) for e in events]
+        return _align_event_description_weekdays(normalized)
 
     try:
         return _invoke_with_retry()

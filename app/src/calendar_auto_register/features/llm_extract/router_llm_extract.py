@@ -75,7 +75,11 @@ async def llm_extract_event(
             # LINE テキストパス: 前処理なし・text は必須
             if not payload.text:
                 raise ValueError("LINE テキストパスでは text は必須です")
-            events = extract_events_from_raw_text(payload.text, settings=settings)
+            events = extract_events_from_raw_text(
+                payload.text,
+                settings=settings,
+                reference_datetime=payload.reference_datetime,
+            )
 
         return LlmExtractEventResponse(events=events)
 
@@ -107,7 +111,11 @@ async def llm_extract_event_image(
     """
     try:
         settings = await _get_settings(request)
-        events = extract_events_from_image(payload.message_id, settings=settings)
+        events = extract_events_from_image(
+            payload.message_id,
+            settings=settings,
+            reference_datetime=payload.reference_datetime,
+        )
         return LlmExtractEventResponse(events=events)
 
     except ValueError as exc:
