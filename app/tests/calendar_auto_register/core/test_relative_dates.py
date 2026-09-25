@@ -73,11 +73,40 @@ def test_単一イベントの日付を解決済み日付へ補正する() -> No
         description="開催日時: 2026年10月1日(水) 19:00",
     )
 
-    corrected = _apply_single_relative_date_resolution([event], resolutions)
+    corrected = _apply_single_relative_date_resolution(
+        [event], resolutions, "歯医者は来週水曜19時です。"
+    )
 
     assert corrected[0].start.dateTime == "2026-09-30T19:00:00+09:00"
     assert corrected[0].end.dateTime == "2026-09-30T19:30:00+09:00"
     assert corrected[0].description == "開催日時: 2026年9月30日(水) 19:00"
+
+
+def test_日付語が複合語の一部なら相対日付として扱わない() -> None:
+    reference = datetime(2026, 9, 26, 12, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+
+    assert resolve_relative_dates(
+        "明日葉をテーマにしたライブは10月10日19時", reference_datetime=reference
+    ) == []
+
+
+def test_期限文や明示日付のある文を根拠にイベント日を上書きしない() -> None:
+    reference = datetime(2026, 9, 26, 12, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+    resolutions = resolve_relative_dates(
+        "明日までに返信ください。歯医者は10月5日19時です。",
+        reference_datetime=reference,
+    )
+    event = GoogleCalendarEventModel(
+        summary="歯医者",
+        start={"dateTime": "2026-10-05T19:00:00+09:00", "timeZone": "Asia/Tokyo"},
+        end={"dateTime": "2026-10-05T19:30:00+09:00", "timeZone": "Asia/Tokyo"},
+    )
+
+    result = _apply_single_relative_date_resolution(
+        [event], resolutions, "明日までに返信ください。歯医者は10月5日19時です。"
+    )
+
+    assert result[0].start.dateTime == "2026-10-05T19:00:00+09:00"
 
 
 def test_説明欄の曜日をイベント開始日に揃える() -> None:
