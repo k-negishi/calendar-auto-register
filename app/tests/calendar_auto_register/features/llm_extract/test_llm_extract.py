@@ -173,6 +173,79 @@ def test_複数の予定を抽出できる() -> None:
         assert data["events"][1]["location"] == "オンライン"
 
 
+def test_受付期間と一般発売を会場付きで抽出できる() -> None:
+    """LINEテキストとメールの両方で受付・発売イベントを抽出できることを検証する。"""
+    response_dict = {
+        "events": [
+            {
+                "summary": "ELLEGARDEN@TOYOTA ARENA TOKYO",
+                "start": {"dateTime": "2026-12-09T18:00:00+09:00", "timeZone": "Asia/Tokyo"},
+                "end": {"dateTime": "2026-12-09T21:00:00+09:00", "timeZone": "Asia/Tokyo"},
+                "location": "TOYOTA ARENA TOKYO",
+                "description": "開催日時: 2026年12月9日 18:00～21:00",
+            },
+            {
+                "summary": "1次先行受付(抽選)@ELLEGARDEN@TOYOTA ARENA TOKYO",
+                "start": {"dateTime": "2026-10-02T18:00:00+09:00", "timeZone": "Asia/Tokyo"},
+                "end": {"dateTime": "2026-10-12T23:59:00+09:00", "timeZone": "Asia/Tokyo"},
+                "location": "TOYOTA ARENA TOKYO",
+                "description": "1次先行受付(抽選): 2026年10月2日 18:00～10月12日 23:59",
+            },
+            {
+                "summary": "2次先行受付(抽選)@ELLEGARDEN@TOYOTA ARENA TOKYO",
+                "start": {"dateTime": "2026-10-23T18:00:00+09:00", "timeZone": "Asia/Tokyo"},
+                "end": {"dateTime": "2026-11-01T23:59:00+09:00", "timeZone": "Asia/Tokyo"},
+                "location": "TOYOTA ARENA TOKYO",
+                "description": "2次先行受付(抽選): 2026年10月23日 18:00～11月1日 23:59",
+            },
+            {
+                "summary": "一般発売開始(先着)@ELLEGARDEN@TOYOTA ARENA TOKYO",
+                "start": {"dateTime": "2026-11-14T12:00:00+09:00", "timeZone": "Asia/Tokyo"},
+                "end": {"dateTime": "2026-11-14T13:00:00+09:00", "timeZone": "Asia/Tokyo"},
+                "location": "TOYOTA ARENA TOKYO",
+                "description": "一般発売(先着): 終了時刻は本文未記載",
+            },
+        ]
+    }
+
+    with patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.ChatBedrock"
+    ) as mock_chat_class, patch(
+        "calendar_auto_register.features.llm_extract.usecase_llm_extract.boto3.client"
+    ) as mock_boto_client:
+        mock_chat_class.return_value = _mock_bedrock_chain(response_dict)
+        mock_boto_client.return_value = MagicMock()
+        client = TestClient(create_app())
+
+        line_response = client.post(
+            "/llm/extract-event",
+            json={"text": "ELLEGARDEN Bad For Education Tour II (2026) GRAND FINALE"},
+        )
+        mail_response = client.post(
+            "/llm/extract-event",
+            json=_mail_payload(
+                text=(
+                    "ELLEGARDEN Bad For Education Tour II (2026) GRAND FINALE\n"
+                    "1次先行受付（抽選）10月2日18:00～10月12日23:59"
+                ),
+                subject="チケット受付のお知らせ",
+            ),
+        )
+
+    for response in (line_response, mail_response):
+        assert response.status_code == 200
+        events = response.json()["events"]
+        assert len(events) == 4
+        assert events[1]["summary"].startswith("1次先行受付(抽選)@")
+        assert events[1]["start"]["dateTime"] == "2026-10-02T18:00:00+09:00"
+        assert events[1]["end"]["dateTime"] == "2026-10-12T23:59:00+09:00"
+        assert events[2]["end"]["dateTime"] == "2026-11-01T23:59:00+09:00"
+        assert events[3]["summary"].startswith("一般発売開始(先着)@")
+        assert events[3]["start"]["dateTime"] == "2026-11-14T12:00:00+09:00"
+        assert events[3]["end"]["dateTime"] == "2026-11-14T13:00:00+09:00"
+        assert all(event["location"] == "TOYOTA ARENA TOKYO" for event in events)
+
+
 def test_予定がない場合は空配列を返す() -> None:
     """予定が抽出されない場合、空配列を返すことを検証する。"""
     response_dict = {"events": []}
@@ -697,13 +770,14 @@ def test_extract_event_image_正常系() -> None:
             }
         ]
     }
+    mock_invoke = MagicMock(return_value=bedrock_response)
 
     with patch(
         "calendar_auto_register.clients.line_client.get_message_content",
         return_value=image_bytes,
     ), patch(
         "calendar_auto_register.clients.bedrock_client.invoke_model_with_image",
-        return_value=bedrock_response,
+        mock_invoke,
     ):
         client = TestClient(create_app())
         res = client.post("/llm/extract-event-image", json={"message_id": "img-001"})
@@ -713,6 +787,10 @@ def test_extract_event_image_正常系() -> None:
     assert "events" in data
     assert len(data["events"]) == 1
     assert data["events"][0]["summary"] == "セミナー"
+
+    system_prompt = mock_invoke.call_args.kwargs["system"]
+    assert "先行受付" in system_prompt
+    assert "一般発売" in system_prompt
 
 
 def test_extract_event_image_VISIONモデルIDが使われる() -> None:
