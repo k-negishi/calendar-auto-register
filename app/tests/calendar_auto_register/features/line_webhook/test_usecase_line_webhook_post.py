@@ -193,6 +193,7 @@ def test_テキストメッセージ_start_executionが呼ばれる() -> None:
     assert detail["message_type"] == "text"
     assert detail["message_id"] == "msg-001"
     assert detail["text"] == text
+    assert detail["reference_datetime"] == "2024-03-09T16:00:00+00:00"
     assert detail["user_id"] == "Uuser"
 
 
@@ -215,6 +216,7 @@ def test_画像メッセージ_start_executionが呼ばれる() -> None:
     detail = json.loads(kwargs["input"])["detail"]
     assert detail["message_type"] == "image"
     assert detail["message_id"] == "img-001"
+    assert detail["reference_datetime"] == "2024-03-09T16:00:00+00:00"
     assert detail["user_id"] == "Uuser"
 
 

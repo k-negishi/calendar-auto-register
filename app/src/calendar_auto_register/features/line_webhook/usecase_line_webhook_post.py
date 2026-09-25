@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 import boto3
 from botocore.exceptions import ClientError
@@ -91,6 +92,9 @@ def _start_line_sm(
                 "message_type": event.message.type,
                 "message_id": event.message.id,
                 "text": event.message.text,
+                "reference_datetime": datetime.fromtimestamp(
+                    event.timestamp / 1000, tz=timezone.utc
+                ).isoformat(),
                 "user_id": event.source.userId,
             }
         }

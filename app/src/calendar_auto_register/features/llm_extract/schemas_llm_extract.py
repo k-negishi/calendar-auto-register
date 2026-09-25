@@ -26,6 +26,7 @@ class LlmExtractEventRequest(BaseModel):
     reply_to: str | None = None
     subject: str | None = None
     received_at: datetime | None = None
+    reference_datetime: datetime | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -44,5 +45,6 @@ class LlmExtractImageEventRequest(BaseModel):
     """
 
     message_id: str  # LINE Content API のメッセージ ID
+    reference_datetime: datetime | None = None
 
     model_config = ConfigDict(extra="forbid")

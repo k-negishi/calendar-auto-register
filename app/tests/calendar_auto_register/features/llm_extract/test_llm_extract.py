@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 
 from calendar_auto_register.app import create_app
+from calendar_auto_register.core.models import NormalizedMail
 from calendar_auto_register.core.settings import load_settings
 
 
@@ -399,7 +400,7 @@ def test_Google_Calendar形式を検証() -> None:
 
 
 def test_支払い期限イベントを抽出できる() -> None:
-    """支払い期限イベントを dateTime 形式で抽出できることを検証する。"""
+    """支払い期限イベントを終日形式で抽出できることを検証する。"""
     response_dict = {
         "events": [
             {
@@ -411,8 +412,8 @@ def test_支払い期限イベントを抽出できる() -> None:
             },
             {
                 "summary": "支払い期限 23:59@コンサート@サンプルアリーナ東京",
-                "start": {"dateTime": "2025-12-30T20:00:00+09:00", "timeZone": "Asia/Tokyo"},
-                "end": {"dateTime": "2025-12-30T23:59:00+09:00", "timeZone": "Asia/Tokyo"},
+                "start": {"date": "2025-12-30"},
+                "end": {"date": "2025-12-31"},
                 "description": (
                     "支払い期限: 2025年12月30日 23:59\n"
                     "支払い方法: コンビニ支払い\n"
@@ -454,8 +455,8 @@ def test_支払い期限イベントを抽出できる() -> None:
 
         payment_event = data["events"][1]
         assert payment_event["summary"] == "支払い期限 23:59@コンサート@サンプルアリーナ東京"
-        assert payment_event["start"]["dateTime"] == "2025-12-30T20:00:00+09:00"
-        assert payment_event["end"]["dateTime"] == "2025-12-30T23:59:00+09:00"
+        assert payment_event["start"]["date"] == "2025-12-30"
+        assert payment_event["end"]["date"] == "2025-12-31"
         assert payment_event.get("location") is None
 
 
@@ -497,14 +498,41 @@ def test_全角文字を半角に正規化できる() -> None:
         data = res.json()
         event = data["events"][0]
 
-        assert event["summary"] == "Zepp DiverCity(TOKYO)", \
+        assert event["summary"] == "Zepp　DiverCity(TOKYO)", \
             f"Expected 'Zepp DiverCity(TOKYO)' but got '{event['summary']}'"
-        assert event["location"] == "Zepp DiverCity(TOKYO) (東京都)", \
+        assert event["location"] == "Zepp　DiverCity(TOKYO) (東京都)", \
             f"Expected 'Zepp DiverCity(TOKYO) (東京都)' but got '{event['location']}'"
         assert "4,500円" in event["description"], \
             f"Description should contain '4,500円' but got '{event['description']}'"
         assert "1Fスタンディング" in event["description"], \
             f"Description should contain '1Fスタンディング' but got '{event['description']}'"
+
+
+def test_HTMLのhrefを表示文言と一緒に本文へ残す() -> None:
+    from calendar_auto_register.features.llm_extract.usecase_llm_extract import (
+        _preprocess_mail_body,
+    )
+
+    mail = NormalizedMail(
+        from_addr=None,
+        reply_to=None,
+        subject=None,
+        received_at=None,
+        text=None,
+        html='<p>申込は<a href="https://example.com/apply">こちら</a>から。</p>',
+    )
+
+    text = _preprocess_mail_body(mail)
+
+    assert "こちら (https://example.com/apply)" in text
+
+
+def test_半角正規化で丸数字と日本語空白を保つ() -> None:
+    from calendar_auto_register.features.llm_extract.usecase_llm_extract import (
+        _normalize_to_half_width,
+    )
+
+    assert _normalize_to_half_width("① ＡＢＣ　テスト（２）") == "① ABC　テスト(2)"
 
 
 # ===== extract_events_from_raw_text テスト（Phase 4b: D3, D7） =====
