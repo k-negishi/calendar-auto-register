@@ -59,7 +59,13 @@ def _preprocess_mail_body(normalized_mail: NormalizedMail) -> str:
         href = str(anchor.get("href", "")).strip()
         if not href or href.startswith(("#", "javascript:", "data:")):
             continue
-        label = anchor.get_text(" ", strip=True) or "リンク"
+        label = anchor.get_text(" ", strip=True)
+        if not label:
+            label = " ".join(
+                str(image.get("alt", "")).strip()
+                for image in anchor.find_all("img")
+                if str(image.get("alt", "")).strip()
+            ) or "リンク"
         if href not in label:
             anchor.replace_with(f"{label} ({href})")
     text = soup.get_text(separator="\n")
@@ -279,7 +285,8 @@ def extract_events(
 
     events = _run_extraction_chain(user_message_text, settings=settings)
     resolutions = resolve_relative_dates(cleaned_text, reference_datetime=reference_datetime)
-    events = _apply_single_relative_date_resolution(events, resolutions)
+    events = _apply_single_relative_date_resolution(events, resolutions, cleaned_text)
+    events = _apply_description_relative_dates(events, reference_datetime)
     events = _align_event_description_weekdays(events)
     return _apply_concert_arrival_target(events, cleaned_text)
 
@@ -318,7 +325,8 @@ def extract_events_from_raw_text(
         resolutions
     )
     events = _run_extraction_chain(user_message, settings=settings)
-    events = _apply_single_relative_date_resolution(events, resolutions)
+    events = _apply_single_relative_date_resolution(events, resolutions, text)
+    events = _apply_description_relative_dates(events, reference_datetime)
     events = _align_event_description_weekdays(events)
     return _apply_concert_arrival_target(events, text)
 
@@ -326,12 +334,26 @@ def extract_events_from_raw_text(
 def _apply_single_relative_date_resolution(
     events: list[GoogleCalendarEventModel],
     resolutions: list[RelativeDateResolution],
+    source_text: str = "",
 ) -> list[GoogleCalendarEventModel]:
-    """対応関係が一意な場合に限り、LLMが誤った相対日付を返した結果を補正する。"""
-    if len(events) != 1 or len(resolutions) != 1:
+    """本文上の対応が明確なイベントだけ、相対日付を決定論的に補正する。"""
+    if len(events) != 1 or len(resolutions) != 1 or not source_text:
         return events
 
     event = events[0]
+    phrase = resolutions[0].phrase
+    # 同一文に明示日付があるなら、相対語との対応を推測しない。
+    clauses = re.split(r"[。\n!?！？]", source_text)
+    matching_clauses = [clause for clause in clauses if phrase in clause]
+    if len(matching_clauses) != 1:
+        return events
+    clause = matching_clauses[0]
+    if re.search(r"\d{1,4}[年/月.-]\s*\d{1,2}", clause):
+        return events
+    if re.search(r"まで|期限|締切|以内|返信|回答", clause):
+        return events
+    if not re.search(r"\d{1,2}[:時：]", clause):
+        return events
     expected_date = resolutions[0].resolved_date
     description = _replace_description_event_date(event.description, expected_date)
 
@@ -399,6 +421,29 @@ def _replace_description_event_date(description: str | None, event_date: date) -
     )
 
 
+def _apply_description_relative_dates(
+    events: list[GoogleCalendarEventModel], reference_datetime: datetime
+) -> list[GoogleCalendarEventModel]:
+    """LLMがイベント単位で残した日付原文を使い、複数予定も個別に補正する。"""
+    corrected: list[GoogleCalendarEventModel] = []
+    for event in events:
+        match = re.search(r"日付原文:\s*([^\n]+)", event.description or "")
+        if not match:
+            corrected.append(event)
+            continue
+        phrase = match.group(1).strip()
+        resolutions = resolve_relative_dates(phrase, reference_datetime=reference_datetime)
+        if len(resolutions) != 1 or resolutions[0].phrase != phrase:
+            corrected.append(event)
+            continue
+        # 元表現はイベント自身の説明欄にあるため、他予定やメール本文の日付とは混同しない。
+        event_source = f"{phrase} 19時"
+        corrected.extend(
+            _apply_single_relative_date_resolution([event], resolutions, event_source)
+        )
+    return corrected
+
+
 def _align_event_description_weekdays(
     events: list[GoogleCalendarEventModel],
 ) -> list[GoogleCalendarEventModel]:
@@ -454,7 +499,22 @@ def _apply_concert_arrival_target(
     open_hour, open_minute, start_hour, start_minute = (
         int(value) for value in match.groups()
     )
-    has_explicit_end = bool(re.search(r"終演", source_text))
+    has_explicit_end = bool(
+        re.search(
+            r"(?:終演|終了)\s*(?:時刻|時間)?\s*[:：]?\s*\d{1,2}[:：]\d{2}",
+            source_text,
+        )
+    )
+    candidates = [
+        event
+        for event in events
+        if isinstance(event.start, DateTimeModel)
+        and isinstance(event.end, DateTimeModel)
+        and not any(keyword in event.summary for keyword in ("受付", "発売", "支払い期限"))
+    ]
+    # 公演時刻表記と無関係な予定が同じ入力にある場合は、対象を推測しない。
+    if len(candidates) != 1:
+        return events
     adjusted: list[GoogleCalendarEventModel] = []
 
     for event in events:
@@ -617,6 +677,7 @@ def extract_events_from_image(
             prompt=(
                 "この画像からカレンダーの予定情報を抽出してください。\n"
                 f"現在日時: {reference_datetime.isoformat(timespec='seconds')}\n"
+                "日付が『明日』『来週水曜』など相対表現の場合、descriptionにその原文表現を残してください。\n"
                 "相対日付は現在日時を基準に解決してください。"
                 "「次の水曜」「今度の水曜」は基準日より後の直近の水曜、"
                 "「来週水曜」は翌週、「再来週水曜」は翌々週（月曜始まり）の水曜を指します。"
@@ -625,7 +686,19 @@ def extract_events_from_image(
         events = _parse_image_llm_response(response)
         # [D4] テキストパスと同一の正規化を適用
         normalized = [_normalize_event_to_half_width(e) for e in events]
-        return _align_event_description_weekdays(normalized)
+        normalized = _apply_description_relative_dates(normalized, reference_datetime)
+        corrected: list[GoogleCalendarEventModel] = []
+        for event in normalized:
+            event_source = f"{event.summary}\n{event.description or ''}"
+            event_resolutions = resolve_relative_dates(
+                event_source, reference_datetime=reference_datetime
+            )
+            corrected.extend(
+                _apply_single_relative_date_resolution(
+                    [event], event_resolutions, event_source
+                )
+            )
+        return _align_event_description_weekdays(corrected)
 
     try:
         return _invoke_with_retry()
