@@ -21,6 +21,7 @@ _RELATIVE_DATE_PATTERN = re.compile(
     rf"(?:(?:再来週|今度|次|来週|今週)(?:の)?{_WEEKDAY_PATTERN})|"
     r"[0-9０-９]+日後|[0-9０-９]+週間後)"
 )
+_JAPANESE_WORD_CHAR = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,10 @@ def resolve_relative_dates(
     resolutions: list[RelativeDateResolution] = []
 
     for match in _RELATIVE_DATE_PATTERN.finditer(text):
+        # 相対日付語が日本語の複合語の先頭にある場合は拾わない。
+        end = match.end()
+        if end < len(text) and _JAPANESE_WORD_CHAR.fullmatch(text[end]):
+            continue
         phrase = match.group("relative")
         resolved = _resolve_phrase(phrase, reference_date)
         if resolved is not None:
