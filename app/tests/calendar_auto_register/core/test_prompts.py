@@ -61,3 +61,5 @@ def test_共通抽出プロンプトに受付販売期間のルールを含む()
     assert "抽選/先着" in CALENDAR_EVENT_EXTRACTION_SYSTEM
     assert "開始から1時間" in CALENDAR_EVENT_EXTRACTION_SYSTEM
     assert "summary と location" in CALENDAR_EVENT_EXTRACTION_SYSTEM
+    assert "開場時間の1時間前" in CALENDAR_EVENT_EXTRACTION_SYSTEM
+    assert "到着目標" in CALENDAR_EVENT_EXTRACTION_SYSTEM

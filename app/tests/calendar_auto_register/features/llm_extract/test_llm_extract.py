@@ -182,7 +182,10 @@ def test_受付期間と一般発売を会場付きで抽出できる() -> None:
                 "start": {"dateTime": "2026-12-09T18:00:00+09:00", "timeZone": "Asia/Tokyo"},
                 "end": {"dateTime": "2026-12-09T21:00:00+09:00", "timeZone": "Asia/Tokyo"},
                 "location": "TOYOTA ARENA TOKYO",
-                "description": "開催日時: 2026年12月9日 18:00～21:00",
+                "description": (
+                    "到着目標: 2026年12月9日 17:00（開場1時間前）\n"
+                    "開場: 18:00 / 開演: 19:00 / 終演: 開演から3時間で仮設定"
+                ),
             },
             {
                 "summary": "1次先行受付(抽選)@ELLEGARDEN@TOYOTA ARENA TOKYO",
@@ -219,13 +222,19 @@ def test_受付期間と一般発売を会場付きで抽出できる() -> None:
 
         line_response = client.post(
             "/llm/extract-event",
-            json={"text": "ELLEGARDEN Bad For Education Tour II (2026) GRAND FINALE"},
+            json={
+                "text": (
+                    "ELLEGARDEN Bad For Education Tour II (2026) GRAND FINALE\n"
+                    "OPEN18:00 / START19:00"
+                )
+            },
         )
         mail_response = client.post(
             "/llm/extract-event",
             json=_mail_payload(
                 text=(
                     "ELLEGARDEN Bad For Education Tour II (2026) GRAND FINALE\n"
+                    "OPEN18:00 / START19:00\n"
                     "1次先行受付（抽選）10月2日18:00～10月12日23:59"
                 ),
                 subject="チケット受付のお知らせ",
@@ -236,6 +245,9 @@ def test_受付期間と一般発売を会場付きで抽出できる() -> None:
         assert response.status_code == 200
         events = response.json()["events"]
         assert len(events) == 4
+        assert events[0]["start"]["dateTime"] == "2026-12-09T17:00:00+09:00"
+        assert events[0]["end"]["dateTime"] == "2026-12-09T22:00:00+09:00"
+        assert "到着目標: 2026-12-09 17:00" in events[0]["description"]
         assert events[1]["summary"].startswith("1次先行受付(抽選)@")
         assert events[1]["start"]["dateTime"] == "2026-10-02T18:00:00+09:00"
         assert events[1]["end"]["dateTime"] == "2026-10-12T23:59:00+09:00"
