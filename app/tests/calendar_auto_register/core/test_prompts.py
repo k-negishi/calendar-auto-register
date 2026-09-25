@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from calendar_auto_register.core.prompts import build_line_text_user_message
+from calendar_auto_register.core.prompts import (
+    CALENDAR_EVENT_EXTRACTION_SYSTEM,
+    build_line_text_user_message,
+)
 
 # ===== 失敗系テスト（先に書く） =====
 
@@ -49,3 +52,12 @@ def test_build_line_text_user_message_文字列を返す() -> None:
     result = build_line_text_user_message("テスト")
     assert isinstance(result, str)
     assert len(result) > 0
+
+
+def test_共通抽出プロンプトに受付販売期間のルールを含む() -> None:
+    """LINE・メール・画像で共有する受付/販売イベントの抽出ルールを確認する。"""
+    assert "先行受付" in CALENDAR_EVENT_EXTRACTION_SYSTEM
+    assert "一般発売" in CALENDAR_EVENT_EXTRACTION_SYSTEM
+    assert "抽選/先着" in CALENDAR_EVENT_EXTRACTION_SYSTEM
+    assert "開始から1時間" in CALENDAR_EVENT_EXTRACTION_SYSTEM
+    assert "summary と location" in CALENDAR_EVENT_EXTRACTION_SYSTEM
